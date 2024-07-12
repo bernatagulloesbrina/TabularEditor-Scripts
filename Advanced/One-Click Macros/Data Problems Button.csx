@@ -1,23 +1,21 @@
 #r "Microsoft.VisualBasic"
 using Microsoft.VisualBasic;
 
-
 // '2021-05-26 / B.Agullo / 
 // '2021-10-13 / B.Agullo / dynamic parameters for one-click operation
 // '2022-10-18 / B.Agullo / Bug fixes
+// '2024-07-12 / B.Agullo / annotations for execution with "Create Data Problems Button.csx"
+
 // by Bernat Agulló
 // www.esbrina-ba.com
-
 // Instructions: 
-// select the measures that counts the number of "data problems" the model has and then run the script or as macro
-// when adding macro select measure context for execution 
-
+//select the measures that counts the number of "data problems" the model has and then run the script or as macro
+//when adding macro select measure context for execution 
 //
 // ----- do not modify script below this line -----
 //
-
-
-if (Selected.Measures.Count != 1) {
+if (Selected.Measures.Count != 1)
+{
     Error("Select one and only one measure");
     return;
 };
@@ -30,25 +28,25 @@ if(Model.Tables.Any(Table => Table.Name == navigationTableName)) {
     return; 
 };
 
+string annotationLabel = "DataProblemsMeasures";
+string annotationValueNavigation = "ButtonNavigationMeasure";
+string annotationValueText = "ButtonTextMeasure";
+string annotationValueBackground = "ButtonBackgroundMeasure";
+
+string navigationTableName = Interaction.InputBox("Provide a name for navigation measures table name", "Navigation Table Name", "Navigation", 740, 400);
+if (navigationTableName == "") return;
 string buttonTextMeasureName = Interaction.InputBox("Name for your button text measure", "Button text measure name", "Button Text", 740, 400);
-if(buttonTextMeasureName == "") return;
-
+if (buttonTextMeasureName == "") return;
 string buttonTextPattern = Interaction.InputBox("Provide a pattern for your button text", "Button text pattern (# = no. of problems)", "There are # data problems", 740, 400);
-if(buttonTextPattern == "") return;
-
+if (buttonTextPattern == "") return;
 string buttonBackgroundMeasureName = Interaction.InputBox("Name your button background measure", "Button Background Measure", "Button Background", 740, 400);
-if(buttonBackgroundMeasureName == "") return;
-
+if (buttonBackgroundMeasureName == "") return;
 string buttonNavigationMeasureName = Interaction.InputBox("Name your button navigation measure", "Button Navigation Measure", "Button Navigation", 740, 400);
-if(buttonNavigationMeasureName == "") return;
-
+if (buttonNavigationMeasureName == "") return;
 string thereAreDataProblemsMeasureName = Interaction.InputBox("Name your data problems flag measure", "Data problems Flag Measure", "There are Data Problems", 740, 400);
-if(thereAreDataProblemsMeasureName == "") return;
-
+if (thereAreDataProblemsMeasureName == "") return;
 string dataProblemsSheetName = Interaction.InputBox("Where are the data problems detail?", "Data problems Sheet", "Data Problems", 740, 400);
-if(dataProblemsSheetName == "") return;
-
-
+if (dataProblemsSheetName == "") return;
 // colors will be created if not present
 string buttonColorMeasureNameWhenVisible = Interaction.InputBox("What's the color measure name when the button is visible?", "Visible color measure name", "Warning Color", 740, 400);
 if(buttonColorMeasureNameWhenVisible == "") return;
@@ -72,101 +70,85 @@ string[] newMeasureNames =
         buttonBackgroundMeasureName,
         buttonNavigationMeasureName,
         thereAreDataProblemsMeasureName
-    };
-
-
-// check none of the new measure names already exist as such 
-foreach(string measureName in newMeasureNames) {
-    if(Model.AllMeasures.Any(Measure => Measure.Name == measureName)) {
-        Error(measureName + " already exists!"); 
+        };
+//check none of the new measure names already exist as such 
+foreach (string measureName in newMeasureNames)
+{
+    if (Model.AllMeasures.Any(Measure => Measure.Name == measureName))
+    {
+        Error(measureName + " already exists!");
         return;
     };
 };
-    
-var dataProblemsMeasure = Selected.Measure; 
-
-string navigationTableExpression = 
+var dataProblemsMeasure = Selected.Measure;
+string navigationTableExpression =
     "FILTER({1},[Value] = 0)";
-
-var navigationTable = 
-    Model.AddCalculatedTable(navigationTableName,navigationTableExpression);
-    
-navigationTable.FormatDax(); 
-navigationTable.Description = 
+var navigationTable =
+    Model.AddCalculatedTable(navigationTableName, navigationTableExpression);
+navigationTable.FormatDax();
+navigationTable.Description =
     "Table to store the measures for the dynamic button that leads to the data problems sheet";
-
-navigationTable.IsHidden = true;     
-
-if(!Model.AllMeasures.Any(Measure => Measure.Name == buttonColorMeasureNameWhenVisible)) {
-    navigationTable.AddMeasure(buttonColorMeasureNameWhenVisible,buttonColorMeasureValueWhenVisible);
+navigationTable.IsHidden = true;
+if (!Model.AllMeasures.Any(Measure => Measure.Name == buttonColorMeasureNameWhenVisible))
+{
+    navigationTable.AddMeasure(buttonColorMeasureNameWhenVisible, buttonColorMeasureValueWhenVisible);
 };
-
-if(!Model.AllMeasures.Any(Measure => Measure.Name == buttonColorMeasureNameWhenInvisible)) {
-    navigationTable.AddMeasure(buttonColorMeasureNameWhenInvisible,"\"#FFFFFF00\"");
+if (!Model.AllMeasures.Any(Measure => Measure.Name == buttonColorMeasureNameWhenInvisible))
+{
+    navigationTable.AddMeasure(buttonColorMeasureNameWhenInvisible, "\"#FFFFFF00\"");
 };
-
-string thereAreDataProblemsMeasureExpression = 
+string thereAreDataProblemsMeasureExpression =
     "[" + dataProblemsMeasure.Name + "]>0";
-
-var thereAreDataProblemsMeasure = 
+var thereAreDataProblemsMeasure =
     navigationTable.AddMeasure(
         thereAreDataProblemsMeasureName,
         thereAreDataProblemsMeasureExpression
     );
-
-thereAreDataProblemsMeasure.FormatDax(); 
-thereAreDataProblemsMeasure.Description = "Boolean measure, if true, the button leading to data problems sheet should show (internal use only)" ;
- 
-string buttonBackgroundMeasureExpression = 
-    "VAR colorCode = " + 
-    "    IF(" + 
-    "        [" + thereAreDataProblemsMeasureName + "]," + 
-    "        [" + buttonColorMeasureNameWhenVisible + "]," + 
-    "        [" + buttonColorMeasureNameWhenInvisible + "]" + 
-    "    )" + 
-    "RETURN " + 
+thereAreDataProblemsMeasure.FormatDax();
+thereAreDataProblemsMeasure.Description = "Boolean measure, if true, the button leading to data problems sheet should show (internal use only)";
+string buttonBackgroundMeasureExpression =
+    "VAR colorCode = " +
+    "    IF(" +
+    "        [" + thereAreDataProblemsMeasureName + "]," +
+    "        [" + buttonColorMeasureNameWhenVisible + "]," +
+    "        [" + buttonColorMeasureNameWhenInvisible + "]" +
+    "    )" +
+    "RETURN " +
     "    FORMAT(colorCode,\"@\")";
-    
-var buttonBackgroundMeasure = 
+Measure buttonBackgroundMeasure =
     navigationTable.AddMeasure(
         buttonBackgroundMeasureName,
         buttonBackgroundMeasureExpression
     );
-    
-buttonBackgroundMeasure.FormatDax(); 
-buttonBackgroundMeasure.Description = "Use this measure for conditional formatting of button background";  
-
-string buttonNavigationMeasureExpression = 
-    "IF(" + 
-    "    [" + thereAreDataProblemsMeasureName + "]," + 
-    "    \"" + dataProblemsSheetName + "\"," + 
-    "    \"\"" + 
+buttonBackgroundMeasure.FormatDax();
+buttonBackgroundMeasure.Description = "Use this measure for conditional formatting of button background";
+buttonBackgroundMeasure.SetAnnotation(annotationLabel, annotationValueBackground);
+string buttonNavigationMeasureExpression =
+    "IF(" +
+    "    [" + thereAreDataProblemsMeasureName + "]," +
+    "    \"" + dataProblemsSheetName + "\"," +
+    "    \"\"" +
     ")";
-
-var buttonNavigationMeasure = 
+Measure buttonNavigationMeasure =
     navigationTable.AddMeasure(
         buttonNavigationMeasureName,
         buttonNavigationMeasureExpression
     );
-    
-buttonNavigationMeasure.FormatDax(); 
-buttonNavigationMeasure.Description = "Use this measure for conditional page navigation";  
-
-string buttonTextMeasureExpression = 
-    "IF(" + 
-    "    [" + thereAreDataProblemsMeasureName + "]," + 
-    "    SUBSTITUTE(\"" + buttonTextPattern + "\",\"#\",FORMAT([" + dataProblemsMeasure.Name + "],0))," + 
-    "    \"\"" + 
-    ")";    
-    
-var buttonTextMeasure = 
+buttonNavigationMeasure.FormatDax();
+buttonNavigationMeasure.Description = "Use this measure for conditional page navigation";
+buttonNavigationMeasure.SetAnnotation(annotationLabel, annotationValueNavigation);
+string buttonTextMeasureExpression =
+    "IF(" +
+    "    [" + thereAreDataProblemsMeasureName + "]," +
+    "    SUBSTITUTE(\"" + buttonTextPattern + "\",\"#\",FORMAT([" + dataProblemsMeasure.Name + "],0))," +
+    "    \"\"" +
+    ")";
+var buttonTextMeasure =
     navigationTable.AddMeasure(
         buttonTextMeasureName,
         buttonTextMeasureExpression
     );
-    
-buttonTextMeasure.FormatDax(); 
-buttonTextMeasure.Description = "Use this measure for dynamic button text";  
-
+buttonTextMeasure.FormatDax();
+buttonTextMeasure.Description = "Use this measure for dynamic button text";
+buttonTextMeasure.SetAnnotation(annotationLabel, annotationValueText);
 //dataProblemsMeasure.MoveTo(navigationTable);
-    
