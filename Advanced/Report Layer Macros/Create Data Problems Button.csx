@@ -3,13 +3,15 @@ using System.IO;
 // '2024-07-10 / B.Agullo / 
 // Instructions:
 // execute after running latest version of dataProblemsButtomMeasureCreation macro
+// See https://www.esbrina-ba.com/c-scripting-the-report-layer-with-tabular-editor/ for detail
+
 
 /*uncomment in TE3 to avoid wating cursor infront of dialogs*/
 
-ScriptHelper.WaitFormVisible = false;
-
-bool waitCursor = Application.UseWaitCursor;
-Application.UseWaitCursor = false;
+//ScriptHelper.WaitFormVisible = false;
+//
+//bool waitCursor = Application.UseWaitCursor;
+//Application.UseWaitCursor = false;
 
 DialogResult dialogResult = MessageBox.Show(text:"Did you save your model changes before running this macro?", caption:"Saved changes?", buttons:MessageBoxButtons.YesNo);
 
@@ -296,7 +298,7 @@ ReportManager.AddNewPage(newPageContent, newVisualContent,pbirFilePath,newPageId
 
 
 Info("New page added successfully. Close your PBIP project on Power BI desktop *without saving changes* and open again to see the new page with the button.");
-Application.UseWaitCursor = waitCursor;
+//Application.UseWaitCursor = waitCursor;
 
 public static class ReportManager
 {
