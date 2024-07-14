@@ -13,7 +13,7 @@ using System.IO;
 //bool waitCursor = Application.UseWaitCursor;
 //Application.UseWaitCursor = false;
 
-DialogResult dialogResult = MessageBox.Show(text:"Did you save your model changes before running this macro?", caption:"Saved changes?", buttons:MessageBoxButtons.YesNo);
+DialogResult dialogResult = MessageBox.Show(text:"Did you save changes in PBI Desktop before running this macro?", caption:"Saved changes?", buttons:MessageBoxButtons.YesNo);
 
 if(dialogResult != DialogResult.Yes){
     Info("Please save your changes first and then run this macro"); 
