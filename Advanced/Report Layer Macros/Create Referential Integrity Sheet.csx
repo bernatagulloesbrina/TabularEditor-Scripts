@@ -1,12 +1,14 @@
 using Microsoft.VisualBasic;
-
 using System.Windows.Forms;
 using System.IO;
-// '2024-07-13 / B.Agullo / 
+
+// '2024-07-14 / B.Agullo / 
+//
 // Requirements:
 // execute after running the Referential integrity check measures script (version  2024-07-13 or later)
 // https://github.com/bernatagulloesbrina/TabularEditor-Scripts/blob/main/Advanced/One-Click%20Macros/Referential%20Integrity%20Check%20Measures.csx
-// See blog posta here: 
+// 
+// See blog posts here: 
 // https://www.esbrina-ba.com/easy-management-of-referential-integrity/
 // https://www.esbrina-ba.com/building-a-referential-integrity-report-page-with-a-c-script/
 
