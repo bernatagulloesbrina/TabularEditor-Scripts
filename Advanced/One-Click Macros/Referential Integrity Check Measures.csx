@@ -1,9 +1,15 @@
 // 2023-02-15 / B.Agulló / Added useRelationship in the expression to check also inactive relationships
 // 2023-12-22 / B.Agulló / Added suggestions by Ed Hansberry 
 // 2024-07-13 / B.Agulló / Add annotations for the report-layer script, possible to execute without selected table, subtitles measures
-//Select the desired table  to store all data quality measures
+//
+// Instructions:
+// Select the desired table  to store all data quality measures
 // or execute just on the model and a new table will be created for you
-//See https://www.esbrina-ba.com/easy-management-of-referential-integrity/
+// See https://www.esbrina-ba.com/easy-management-of-referential-integrity/
+//
+// To create the report sheet check out:
+// https://www.esbrina-ba.com/building-a-referential-integrity-report-page-with-a-c-script/
+
 //change the resulting variable names if you want
 string overallCounterName = "Total Unmapped Items";
 string overallDetailName = "Data Problems";
