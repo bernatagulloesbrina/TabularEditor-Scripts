@@ -11,9 +11,12 @@ if (fieldParameterTable.Columns.Count() < 3)
     Error("This script expects at least 3 columns in the table");
     return;
 }
-Column displayNameColumn = SelectColumn(fieldParameterTable, fieldParameterTable.Columns[0], "Select display name column");
+Column displayNameColumn = SelectColumn(fieldParameterTable, fieldParameterTable.Columns[0], "Select display name column");           
+if(displayNameColumn == null) { Error("You cancelled");return; }; 
 Column fieldColumn = SelectColumn(fieldParameterTable, fieldParameterTable.Columns[1], "Select field table");
+if(fieldColumn == null) { Error("You cancelled"); return; };
 Column orderColumn = SelectColumn(fieldParameterTable, fieldParameterTable.Columns[2], "Select order column");
+if(orderColumn == null) { Error("You cancelled"); return; };
 fieldColumn.SetExtendedProperty(name: "ParameterMetadata", value: @"{""version"":3,""kind"":2}", type: ExtendedPropertyType.Json);
 displayNameColumn.GroupByColumns.Add(fieldColumn);
 displayNameColumn.SortByColumn = orderColumn;
