@@ -797,7 +797,7 @@ string pctFormatString =
 "IF(" +
 "\n	FIND( " + flagExpression + ", SELECTEDMEASUREFORMATSTRING(), 1, - 1 ) <> -1," +
 "\n	SELECTEDMEASUREFORMATSTRING()," +
-"\n	\"#,##0.# %\"" +
+"\n	\"+#,##0.# %;-#,##0.# %;-\"" +
 "\n)";
 
 

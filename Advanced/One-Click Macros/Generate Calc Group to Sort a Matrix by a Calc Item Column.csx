@@ -4,14 +4,13 @@
 // this script was written live in the Seattle Modern Excel & Power BI User Group  on July 26th 2023.
 // To execute select a calculation group table and click execute
 // It es recommented to store as macro for Calculation Group Table
-
 string noSortCalcItemName = "No Sort";
-if(Selected.Tables.Count != 1)
+if (Selected.Tables.Count != 1)
 {
     Error("Please select a single calculation group and try again.");
     return;
 }
-if(Selected.Table.GetTypeName() != "Calculation Group Table")
+if (Selected.Table.ObjectTypeName != "Calculation Group Table")
 {
     Error("This is not a calculation group");
     return;
@@ -30,8 +29,8 @@ Column firstCalcTableColumn =
     : calculatedTable.Columns[0];
 string sortCalcGroupName = "Sort";
 string sortCalcItemExpression =
-    String.Format(
-        @" VAR inTotal =
+    String.Format(@" 
+        VAR inTotal =
             NOT HASONEVALUE ( {0} )
         VAR sortBy =
             SELECTEDVALUE ( {1}, ""{2}"" )
