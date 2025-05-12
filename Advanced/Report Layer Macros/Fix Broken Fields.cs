@@ -5,41 +5,41 @@ using System.IO;
 using Newtonsoft.Json.Linq;
 
 
-//2025-05-10/B.Agullo
-//Being connected to a semantic model, the macro will ask for a definition.pbir file
-//it will check all the fields used in the report (measures and columns) and compare them with the fields of the model
-//for each field in the report not present in the model it will ask for a substitute
-//it will proceed to update all visuals that use any of the broken fields and save the changes back to the visual.json files
-//It works only with PBIR reports! 
-//I have tested but there are no guarantees. Also PBIR is still in preview so updates can break this macro 
-//Be sure to use GIT on your folder and check all modifications before doing the commit
+// 2025-05-10/B.Agullo
+// Being connected to a semantic model, the macro will ask for a definition.pbir file
+// it will check all the fields used in the report (measures and columns) and compare them with the fields of the model
+// for each field in the report not present in the model it will ask for a substitute
+// it will proceed to update all visuals that use any of the broken fields and save the changes back to the visual.json files
+// It works only with PBIR reports! 
+// I have tested but there are no guarantees. Also PBIR is still in preview so updates can break this macro 
+// Be sure to use GIT on your folder and check all modifications before doing the commit
 
 
 ReportExtended report = Rx.InitReport();
 if (report == null) return;
 var modifiedVisuals = new HashSet<VisualExtended>();
 // Gather all visuals and all fields used in them
-var allVisuals = (report.Pages ?? new List<PageExtended>())
+IList<VisualExtended> allVisuals = (report.Pages ?? new List<PageExtended>())
     .SelectMany(p => p.Visuals ?? Enumerable.Empty<VisualExtended>())
     .ToList();
-var allReportMeasures = allVisuals
+IList<string> allReportMeasures = allVisuals
     .SelectMany(v => v.GetAllReferencedMeasures())
     .Distinct()
     .ToList();
-var allReportColumns = allVisuals
+IList<string> allReportColumns = allVisuals
     .SelectMany(v => v.GetAllReferencedColumns())
     .Distinct()
     .ToList();
-var allModelMeasures = Model.AllMeasures
+IList<string> allModelMeasures = Model.AllMeasures
     .Select(m => $"{m.Table.DaxObjectFullName}[{m.Name}]")
     .ToList();
-var allModelColumns = Model.AllColumns
+IList<string> allModelColumns = Model.AllColumns
     .Select(c => c.DaxObjectFullName)
     .ToList();
-var brokenMeasures = allReportMeasures
+IList<string> brokenMeasures = allReportMeasures
     .Where(m => !allModelMeasures.Contains(m))
     .ToList();
-var brokenColumns = allReportColumns
+IList<string> brokenColumns = allReportColumns
     .Where(c => !allModelColumns.Contains(c))
     .ToList();
 if(!brokenMeasures.Any() && !brokenColumns.Any())
@@ -52,7 +52,8 @@ var tableReplacementMap = new Dictionary<string, string>();
 var fieldReplacementMap = new Dictionary<string, string>();
 foreach (string brokenMeasure in brokenMeasures)
 {
-    Measure replacement = SelectMeasure(label: $"{brokenMeasure} was not found in the model. What's the new measure?");
+    Measure replacement = 
+        SelectMeasure(label: $"{brokenMeasure} was not found in the model. What's the new measure?");
     if (replacement == null) { Error("You Cancelled"); return; }
     string oldTable = brokenMeasure.Split('[')[0].Trim('\'');
     string oldField = brokenMeasure.Split('[', ']')[1];
@@ -85,7 +86,7 @@ foreach (string brokenColumn in brokenColumns)
 // Apply raw text-based replacement to filterConfig JSON strings
 foreach (var visual in allVisuals)
 {
-    Rx.ReplaceInFilterConfigRaw(visual, tableReplacementMap, fieldReplacementMap, modifiedVisuals);
+    visual.ReplaceInFilterConfigRaw(tableReplacementMap, fieldReplacementMap, modifiedVisuals);
 }
 // Save modified visuals
 foreach (var visual in modifiedVisuals)
@@ -422,12 +423,6 @@ public static class Rx
 
 
 
-        // Step 6: Backup the original JSON
-
-        File.Copy(visual.VisualFilePath, visual.VisualFilePath + ".backup", true);
-
-
-
         // Save new JSON, ignoring nulls
 
         string newJson = JsonConvert.SerializeObject(
@@ -452,63 +447,9 @@ public static class Rx
 
         File.WriteAllText(visual.VisualFilePath, newJson);
 
-
-
-
-
-        //Info("Visual updated and saved successfully!");
-
     }
 
 
-
-    public static void ReplaceInFilterConfigRaw(
-
-        VisualExtended visual,
-
-        Dictionary<string, string> tableMap,
-
-        Dictionary<string, string> fieldMap,
-
-        HashSet<VisualExtended> modifiedVisuals = null)
-
-    {
-
-        if (visual.Content.FilterConfig == null) return;
-
-
-
-        string originalJson = JsonConvert.SerializeObject(visual.Content.FilterConfig);
-
-        string updatedJson = originalJson;
-
-
-
-        foreach (var kv in tableMap)
-
-            updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
-
-
-
-        foreach (var kv in fieldMap)
-
-            updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
-
-
-
-        // Only update and track if something actually changed
-
-        if (updatedJson != originalJson)
-
-        {
-
-            visual.Content.FilterConfig = JsonConvert.DeserializeObject(updatedJson);
-
-            modifiedVisuals?.Add(visual);
-
-        }
-
-    }
 
 
 
@@ -702,6 +643,8 @@ public static class Rx
             [JsonProperty("NativeVisualCalculation")] public NativeVisualCalculation NativeVisualCalculation { get; set; }
             [JsonProperty("Measure")] public VisualDto.MeasureObject Measure { get; set; }
             [JsonProperty("Column")] public VisualDto.ColumnField Column { get; set; }
+
+            [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
         }
 
         public class Aggregation
@@ -796,7 +739,7 @@ public static class Rx
 
         public class VisualObjectProperty
         {
-            [JsonProperty("expr")] public FieldExpression Expr { get; set; }
+            [JsonProperty("expr")] public Field Expr { get; set; }
             [JsonProperty("solid")] public SolidColor Solid { get; set; }
             [JsonProperty("color")] public ColorExpression Color { get; set; }
 
@@ -844,15 +787,7 @@ public static class Rx
         }
 
 
-        public class FieldExpression
-        {
-            [JsonProperty("Measure")] public VisualDto.MeasureObject Measure { get; set; }
-            [JsonProperty("Column")] public VisualDto.ColumnField Column { get; set; }
-            [JsonProperty("Aggregation")] public VisualDto.Aggregation Aggregation { get; set; }
-            [JsonProperty("NativeVisualCalculation")] public NativeVisualCalculation NativeVisualCalculation { get; set; }
-
-            [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
-        }
+        
 
         public class Selector
         {
@@ -1272,7 +1207,29 @@ public static class Rx
 
         }
 
+        public void ReplaceInFilterConfigRaw(
+            Dictionary<string, string> tableMap,
+            Dictionary<string, string> fieldMap,
+            HashSet<VisualExtended> modifiedVisuals = null)
+        {
+            if (Content.FilterConfig == null) return;
 
+            string originalJson = JsonConvert.SerializeObject(Content.FilterConfig);
+            string updatedJson = originalJson;
+
+            foreach (var kv in tableMap)
+                updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
+
+            foreach (var kv in fieldMap)
+                updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
+
+            // Only update and track if something actually changed
+            if (updatedJson != originalJson)
+            {
+                Content.FilterConfig = JsonConvert.DeserializeObject(updatedJson);
+                modifiedVisuals?.Add(this);
+            }
+        }
 
     }
 
@@ -1301,8 +1258,6 @@ public static class Rx
         public ReportExtended()
         {
             Pages = new List<PageExtended>();
-
-
 
         }
     }
