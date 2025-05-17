@@ -13,6 +13,7 @@ using Newtonsoft.Json.Linq;
 // It works only with PBIR reports! 
 // I have tested but there are no guarantees. Also PBIR is still in preview so updates can break this macro 
 // Be sure to use GIT on your folder and check all modifications before doing the commit
+// Full explanation in https://www.esbrina-ba.com/c-scripting-nirvana-v2-0-now-with-reporting-layer/
 
 
 ReportExtended report = Rx.InitReport();
