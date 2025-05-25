@@ -1,7 +1,4 @@
 #r "Microsoft.VisualBasic"
-//2025-05-25/B.Agullo
-//provided a definition.pbir file, this script allows the user to replace a measure in all visuals that use it with another measure.
-//when executing the script you must be connected to the semantic model to which the report is connected to or one that is identical. 
 using System.Windows.Forms;
 
 
@@ -9,69 +6,46 @@ using System.Windows.Forms;
 using Microsoft.VisualBasic;
 using System.IO;
 using Newtonsoft.Json.Linq;
+//2025-05-25/B.Agullo
+//this script allows the user to open the JSON file of one or more visuals in the report.
+// Step 1: Initialize the report object
 ReportExtended report = Rx.InitReport();
 if (report == null) return;
-var modifiedVisuals = new HashSet<VisualExtended>();
+// Step 2: Gather all visuals with page info
 var allVisuals = report.Pages
- .SelectMany(p => p.Visuals.Select(v => new { Page = p.Page, Visual = v }))
- .ToList();
-IList<string> allReportMeasures = allVisuals
-    .SelectMany(x => x.Visual.GetAllReferencedMeasures())
-    .Distinct()
+    .SelectMany(p => p.Visuals.Select(v => new { Page = p.Page, Visual = v }))
     .ToList();
-string measureToReplace = Fx.ChooseString(
-    OptionList: allReportMeasures,
-    "Select a measure to replace"
-);
-if (string.IsNullOrEmpty(measureToReplace))
+if (allVisuals.Count == 0)
 {
-    Error("No measure selected.");
+    Info("No visuals found in the report.");
     return;
 }
-Measure replacementMeasure = SelectMeasure(
-    label: $"Select a replacement for '{measureToReplace}'"
-);
-if (replacementMeasure == null)
-{
-    Error("No replacement measure selected.");
-    return;
-}
-var visualsUsingMeasure = allVisuals
-    .Where(x => x.Visual.GetAllReferencedMeasures().Contains(measureToReplace))
-    .Select(x => new
-    {
-        Display = $"{x.Page.DisplayName} - {x.Visual.Content.Visual.VisualType} ({(int)x.Visual.Content.Position.X}, {(int)x.Visual.Content.Position.Y})",
-        Visual = x.Visual
-    })
-    .ToList();
-if (visualsUsingMeasure.Count == 0)
-{
-    Info($"No visuals use the measure '{measureToReplace}'.");
-    return;
-}
-// Step 2: Let the user choose one or more visuals
-var options = visualsUsingMeasure.Select(v => v.Display).ToList();
-List<string> selected = Fx.ChooseStringMultiple(options, "Select visuals to update");
+// Step 3: Prepare display names for selection
+var visualDisplayList = allVisuals.Select(x =>
+    String.Format(@"{0} - {1} ({2}, {3})", x.Page.DisplayName, x.Visual.Content.Visual.VisualType, (int)x.Visual.Content.Position.X, (int)x.Visual.Content.Position.Y)
+).ToList();
+// Step 4: Let the user select one or more visuals
+List<string> selected = Fx.ChooseStringMultiple(OptionList: visualDisplayList, Label: "Select visuals to open JSON files");
 if (selected == null || selected.Count == 0)
 {
     Info("No visuals selected.");
     return;
 }
-// Step 3: Apply replacement only to selected visuals
-foreach (var visualEntry in visualsUsingMeasure)
+// Step 5: For each selected visual, open its JSON file
+foreach (var visualEntry in allVisuals)
 {
-    if (selected.Contains(visualEntry.Display))
+    string display = String.Format(@"{0} - {1} ({2}, {3})", visualEntry.Page.DisplayName, visualEntry.Visual.Content.Visual.VisualType, (int)visualEntry.Visual.Content.Position.X, (int)visualEntry.Visual.Content.Position.Y);
+    if (selected.Contains(display))
     {
-        visualEntry.Visual.ReplaceMeasure(measureToReplace, replacementMeasure);
-        modifiedVisuals.Add(visualEntry.Visual);
+        string jsonPath = visualEntry.Visual.VisualFilePath;
+        if (!File.Exists(jsonPath))
+        {
+            Error(String.Format(@"JSON file not found: {0}", jsonPath));
+            continue;
+        }
+        System.Diagnostics.Process.Start(jsonPath);
     }
 }
-// Save modified visuals
-foreach (var visual in modifiedVisuals)
-{
-    Rx.SaveVisual(visual);
-}
-Output($"{modifiedVisuals.Count} visuals were modified.");
 
 public static class Fx
 {
