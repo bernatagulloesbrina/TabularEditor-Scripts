@@ -2,6 +2,7 @@
 //2025-05-25/B.Agullo
 //provided a definition.pbir file, this script allows the user to replace a measure in all visuals that use it with another measure.
 //when executing the script you must be connected to the semantic model to which the report is connected to or one that is identical. 
+//see https://www.esbrina-ba.com/pbir-scripts-to-replace-field-and-open-visual-json-files/ for reference on how to use it
 using System.Windows.Forms;
 
 

@@ -8,6 +8,7 @@ using System.IO;
 using Newtonsoft.Json.Linq;
 //2025-05-25/B.Agullo
 //this script allows the user to open the JSON file of one or more visuals in the report.
+//see https://www.esbrina-ba.com/pbir-scripts-to-replace-field-and-open-visual-json-files/ for reference on how to use it
 // Step 1: Initialize the report object
 ReportExtended report = Rx.InitReport();
 if (report == null) return;
