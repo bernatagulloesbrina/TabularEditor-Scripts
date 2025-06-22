@@ -6,7 +6,10 @@ using System.Windows.Forms;
 using Microsoft.VisualBasic;
 using System.IO;
 using Newtonsoft.Json.Linq;
+
 //2025-05-25/B.Agullo
+//2025-06-22/B.Agullo/ updated Class and code to work with visual groups
+
 //this script allows the user to open the JSON file of one or more visuals in the report.
 //see https://www.esbrina-ba.com/pbir-scripts-to-replace-field-and-open-visual-json-files/ for reference on how to use it
 // Step 1: Initialize the report object
@@ -23,10 +26,16 @@ if (allVisuals.Count == 0)
 }
 // Step 3: Prepare display names for selection
 var visualDisplayList = allVisuals.Select(x =>
-    String.Format(@"{0} - {1} ({2}, {3})", x.Page.DisplayName, x.Visual.Content.Visual.VisualType, (int)x.Visual.Content.Position.X, (int)x.Visual.Content.Position.Y)
+    String.Format(
+        @"{0} - {1} ({2}, {3})", 
+        x.Page.DisplayName, 
+        x.Visual?.Content?.Visual?.VisualType 
+            ?? x.Visual?.Content?.VisualGroup?.DisplayName, 
+        (int)x.Visual.Content.Position.X, 
+        (int)x.Visual.Content.Position.Y)
 ).ToList();
 // Step 4: Let the user select one or more visuals
-List<string> selected = Fx.ChooseStringMultiple(OptionList: visualDisplayList, Label: "Select visuals to open JSON files");
+List<string> selected = Fx.ChooseStringMultiple(OptionList: visualDisplayList, label: "Select visuals to open JSON files");
 if (selected == null || selected.Count == 0)
 {
     Info("No visuals selected.");
@@ -35,7 +44,13 @@ if (selected == null || selected.Count == 0)
 // Step 5: For each selected visual, open its JSON file
 foreach (var visualEntry in allVisuals)
 {
-    string display = String.Format(@"{0} - {1} ({2}, {3})", visualEntry.Page.DisplayName, visualEntry.Visual.Content.Visual.VisualType, (int)visualEntry.Visual.Content.Position.X, (int)visualEntry.Visual.Content.Position.Y);
+    string display = String.Format
+        (@"{0} - {1} ({2}, {3})", 
+        visualEntry.Page.DisplayName, 
+        visualEntry?.Visual?.Content?.Visual?.VisualType 
+            ?? visualEntry.Visual?.Content?.VisualGroup?.DisplayName, 
+        (int)visualEntry.Visual.Content.Position.X, 
+        (int)visualEntry.Visual.Content.Position.Y);
     if (selected.Contains(display))
     {
         string jsonPath = visualEntry.Visual.VisualFilePath;
@@ -61,19 +76,19 @@ public static class Fx
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
         return response;
     }
-    public static string ChooseString(IList<string> OptionList, string Label = "Choose item")
+    public static string ChooseString(IList<string> OptionList, string label = "Choose item")
     {
-        return ChooseStringInternal(OptionList, MultiSelect: false, Label:Label) as string;
+        return ChooseStringInternal(OptionList, MultiSelect: false, label:label) as string;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string Label = "Choose item(s)")
+    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)")
     {
-        return ChooseStringInternal(OptionList, MultiSelect:true, Label:Label) as List<string>;
+        return ChooseStringInternal(OptionList, MultiSelect:true, label:label) as List<string>;
     }
-    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string Label = "Choose item(s)")
+    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)")
     {
         Form form = new Form
         {
-            Text =Label,
+            Text =label,
             Width = 400,
             Height = 500,
             StartPosition = FormStartPosition.CenterScreen,
@@ -167,19 +182,387 @@ public static class Rx
 
 {
 
-    
 
 
 
 
 
-    public static ReportExtended InitReport()
+
+    public static VisualExtended DuplicateVisual(VisualExtended visualExtended)
+
+    {
+
+        // Generate a clean 16-character name from a GUID (no dashes or slashes)
+
+        string newVisualName = Guid.NewGuid().ToString("N").Substring(0, 16);
+
+        string sourceFolder = Path.GetDirectoryName(visualExtended.VisualFilePath);
+
+        string targetFolder = Path.Combine(Path.GetDirectoryName(sourceFolder), newVisualName);
+
+        if (Directory.Exists(targetFolder))
+
+        {
+
+            Error(string.Format("Folder already exists: {0}", targetFolder));
+
+            return null;
+
+        }
+
+        Directory.CreateDirectory(targetFolder);
+
+
+
+        // Deep clone the VisualDto.Root object
+
+        string originalJson = JsonConvert.SerializeObject(visualExtended.Content, Newtonsoft.Json.Formatting.Indented);
+
+        VisualDto.Root clonedContent = JsonConvert.DeserializeObject<VisualDto.Root>(originalJson);
+
+
+
+        // Update the name property if it exists
+
+        if (clonedContent != null && clonedContent.Name != null)
+
+        {
+
+            clonedContent.Name = newVisualName;
+
+        }
+
+
+
+        // Set the new file path
+
+        string newVisualFilePath = Path.Combine(targetFolder, "visual.json");
+
+
+
+        // Create the new VisualExtended object
+
+        VisualExtended newVisual = new VisualExtended
+
+        {
+
+            Content = clonedContent,
+
+            VisualFilePath = newVisualFilePath
+
+        };
+
+
+
+        return newVisual;
+
+    }
+
+
+
+    public static VisualExtended GroupVisuals(List<VisualExtended> visualsToGroup, string groupName = null, string groupDisplayName = null)
+
+    {
+
+        if (visualsToGroup == null || visualsToGroup.Count == 0)
+
+        {
+
+            Error("No visuals to group.");
+
+            return null;
+
+        }
+
+        // Generate a clean 16-character name from a GUID (no dashes or slashes) if no group name is provided
+
+        if (string.IsNullOrEmpty(groupName))
+
+        {
+
+            groupName = Guid.NewGuid().ToString("N").Substring(0, 16);
+
+        }
+
+        if (string.IsNullOrEmpty(groupDisplayName))
+
+        {
+
+            groupDisplayName = groupName;
+
+        }
+
+
+
+        // Find minimum X and Y
+
+        int minX = visualsToGroup.Min(v => v.Content.Position != null ? (int)v.Content.Position.X : 0);
+
+        int minY = visualsToGroup.Min(v => v.Content.Position != null ? (int)v.Content.Position.Y : 0);
+
+
+
+        // Calculate width and height
+
+        int groupWidth = 0;
+
+        int groupHeight = 0;
+
+        foreach (var v in visualsToGroup)
+
+        {
+
+            if (v.Content != null && v.Content.Position != null)
+
+            {
+
+                int visualWidth = v.Content.Position != null ? (int)v.Content.Position.Width : 0;
+
+                int visualHeight = v.Content.Position != null ? (int)v.Content.Position.Height : 0;
+
+                int xOffset = (int)v.Content.Position.X - minX;
+
+                int yOffset = (int)v.Content.Position.Y - minY;
+
+                int totalWidth = xOffset + visualWidth;
+
+                int totalHeight = yOffset + visualHeight;
+
+                if (totalWidth > groupWidth) groupWidth = totalWidth;
+
+                if (totalHeight > groupHeight) groupHeight = totalHeight;
+
+            }
+
+        }
+
+
+
+        // Create the group visual content
+
+        var groupContent = new VisualDto.Root
+
+        {
+
+            Name = groupName,
+
+            Position = new VisualDto.Position
+
+            {
+
+                X = minX,
+
+                Y = minY,
+
+                Width = groupWidth,
+
+                Height = groupHeight
+
+            },
+
+            VisualGroup = new VisualDto.VisualGroup
+
+            {
+
+                DisplayName = groupDisplayName,
+
+                GroupMode = "ScaleMode"
+
+            }
+
+        };
+
+
+
+        // Create the new VisualExtended for the group
+
+        var groupVisual = new VisualExtended
+
+        {
+
+            Content = groupContent,
+
+            VisualFilePath = null // Set as needed by caller
+
+        };
+
+
+
+        // Update grouped visuals: set parentGroupName and adjust X/Y
+
+        foreach (var v in visualsToGroup)
+
+        {
+
+            if (v.Content == null) continue;
+
+            v.Content.ParentGroupName = groupName;
+
+            if (v.Content.Position != null)
+
+            {
+
+                v.Content.Position.X = v.Content.Position.X - minX;
+
+                v.Content.Position.Y = v.Content.Position.Y - minY;
+
+            }
+
+        }
+
+
+
+        return groupVisual;
+
+    }
+
+
+
+
+
+
+
+    private static readonly string RecentPathsFile = Path.Combine(
+
+    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+
+    "YourAppName", "recentPbirPaths.json");
+
+
+
+    public static string GetPbirFilePathWithHistory(string label = "Select definition.pbir file")
+
+    {
+
+        // Load recent paths
+
+        List<string> recentPaths = LoadRecentPbirPaths();
+
+
+
+        // Filter out non-existing files
+
+        recentPaths = recentPaths.Where(File.Exists).ToList();
+
+
+
+        // Present options to the user
+
+        var options = new List<string>(recentPaths);
+
+        options.Add("Browse for new file...");
+
+
+
+        string selected = Fx.ChooseString(options,label:label);
+
+
+
+        string chosenPath = null;
+
+        if (selected == "Browse for new file..." || string.IsNullOrEmpty(selected))
+
+        {
+
+            chosenPath = GetPbirFilePath(label);
+
+        }
+
+        else
+
+        {
+
+            chosenPath = selected;
+
+        }
+
+
+
+        if (!string.IsNullOrEmpty(chosenPath))
+
+        {
+
+            // Update recent paths
+
+            UpdateRecentPbirPaths(chosenPath, recentPaths);
+
+        }
+
+
+
+        return chosenPath;
+
+    }
+
+
+
+    private static List<string> LoadRecentPbirPaths()
+
+    {
+
+        try
+
+        {
+
+            if (File.Exists(RecentPathsFile))
+
+            {
+
+                string json = File.ReadAllText(RecentPathsFile);
+
+                return JsonConvert.DeserializeObject<List<string>>(json) ?? new List<string>();
+
+            }
+
+        }
+
+        catch { }
+
+        return new List<string>();
+
+    }
+
+
+
+    private static void UpdateRecentPbirPaths(string newPath, List<string> recentPaths)
+
+    {
+
+        // Remove if already exists, insert at top
+
+        recentPaths.RemoveAll(p => string.Equals(p, newPath, StringComparison.OrdinalIgnoreCase));
+
+        recentPaths.Insert(0, newPath);
+
+
+
+        // Keep only the latest 10
+
+        while (recentPaths.Count > 10)
+
+            recentPaths.RemoveAt(recentPaths.Count - 1);
+
+
+
+        // Ensure directory exists
+
+        Directory.CreateDirectory(Path.GetDirectoryName(RecentPathsFile));
+
+        File.WriteAllText(RecentPathsFile, JsonConvert.SerializeObject(recentPaths, Newtonsoft.Json.Formatting.Indented));
+
+    }
+
+
+
+
+
+    public static ReportExtended InitReport(string label = "Please select definition.pbir file of the target report")
 
     {
 
         // Get the base path from the user  
 
-        string basePath = Rx.GetPbirFilePath();
+        string basePath = Rx.GetPbirFilePathWithHistory(label:label);
 
         if (basePath == null)
 
@@ -303,7 +686,7 @@ public static class Rx
 
                                 visualExtended.VisualFilePath = visualJsonPath;
 
-
+                                visualExtended.ParentPage = pageExtended; // Set parent page reference
 
                                 pageExtended.Visuals.Add(visualExtended);
 
@@ -421,6 +804,114 @@ public static class Rx
 
 
 
+    public static PageExtended ReplicateFirstPageAsBlank(ReportExtended report, bool showMessages = false)
+
+    {
+
+        if (report.Pages == null || !report.Pages.Any())
+
+        {
+
+            Error("No pages found in the report.");
+
+            return null;
+
+        }
+
+
+
+        PageExtended firstPage = report.Pages[0];
+
+
+
+        // Generate a clean 16-character name from a GUID (no dashes or slashes)
+
+        string newPageName = Guid.NewGuid().ToString("N").Substring(0, 16);
+
+        string newPageDisplayName = firstPage.Page.DisplayName + " - Copy";
+
+
+
+        string sourceFolder = Path.GetDirectoryName(firstPage.PageFilePath);
+
+        string targetFolder = Path.Combine(Path.GetDirectoryName(sourceFolder), newPageName);
+
+        string visualsFolder = Path.Combine(targetFolder, "visuals");
+
+
+
+        if (Directory.Exists(targetFolder))
+
+        {
+
+            Error($"Folder already exists: {targetFolder}");
+
+            return null;
+
+        }
+
+
+
+        Directory.CreateDirectory(targetFolder);
+
+        Directory.CreateDirectory(visualsFolder);
+
+
+
+        var newPageDto = new PageDto
+
+        {
+
+            Name = newPageName,
+
+            DisplayName = newPageDisplayName,
+
+            DisplayOption = firstPage.Page.DisplayOption,
+
+            Height = firstPage.Page.Height,
+
+            Width = firstPage.Page.Width,
+
+            Schema = firstPage.Page.Schema
+
+        };
+
+
+
+        var newPage = new PageExtended
+
+        {
+
+            Page = newPageDto,
+
+            PageFilePath = Path.Combine(targetFolder, "page.json"),
+
+            Visuals = new List<VisualExtended>() // empty visuals
+
+        };
+
+
+
+        File.WriteAllText(newPage.PageFilePath, JsonConvert.SerializeObject(newPageDto, Newtonsoft.Json.Formatting.Indented));
+
+
+
+        report.Pages.Add(newPage);
+
+
+
+        if(showMessages) Info($"Created new blank page: {newPageName}");
+
+
+
+        return newPage; 
+
+    }
+
+
+
+
+
     public static void SaveVisual(VisualExtended visual)
 
     {
@@ -448,6 +939,18 @@ public static class Rx
             }
 
         );
+
+        // Ensure the directory exists before saving
+
+        string visualFolder = Path.GetDirectoryName(visual.VisualFilePath);
+
+        if (!Directory.Exists(visualFolder))
+
+        {
+
+            Directory.CreateDirectory(visualFolder);
+
+        }
 
         File.WriteAllText(visual.VisualFilePath, newJson);
 
@@ -493,7 +996,7 @@ public static class Rx
 
 
 
-    public static String GetPbirFilePath()
+    public static String GetPbirFilePath(string label = "Please select definition.pbir file of the target report")
 
     {
 
@@ -505,7 +1008,7 @@ public static class Rx
 
         {
 
-            Title = "Please select definition.pbir file of the target report",
+            Title = label,
 
             // Set filter options and filter index.
 
@@ -557,6 +1060,7 @@ public static class Rx
 
         [Newtonsoft.Json.JsonProperty("activePageName")]
         public string ActivePageName { get; set; }
+        
     }
 
 
@@ -591,10 +1095,74 @@ public static class Rx
             [JsonProperty("name")] public string Name { get; set; }
             [JsonProperty("position")] public Position Position { get; set; }
             [JsonProperty("visual")] public Visual Visual { get; set; }
-            [JsonProperty("visualContainerObjects")] public object VisualContainerObjects { get; set; }
+            [JsonProperty("visualContainerObjects")]
+            public VisualContainerObjects VisualContainerObjects { get; set; }
+
+            [JsonProperty("visualGroup")] public VisualGroup VisualGroup { get; set; }
+            [JsonProperty("parentGroupName")] public string ParentGroupName { get; set; }
             [JsonProperty("filterConfig")] public object FilterConfig { get; set; }
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+
+        public class VisualContainerObjects
+        {
+            [JsonProperty("general")]
+            public List<VisualContainerObject> General { get; set; }
+
+            // Add other known properties as needed, e.g.:
+            [JsonProperty("title")]
+            public List<VisualContainerObject> Title { get; set; }
+
+            [JsonProperty("subTitle")]
+            public List<VisualContainerObject> SubTitle { get; set; }
+
+            // This will capture any additional properties not explicitly defined above
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualContainerObject
+        {
+            [JsonProperty("properties")]
+            public Dictionary<string, VisualContainerProperty> Properties { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualContainerProperty
+        {
+            [JsonProperty("expr")]
+            public VisualExpr Expr { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualExpr
+        {
+            [JsonProperty("Literal")]
+            public VisualLiteral Literal { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualLiteral
+        {
+            [JsonProperty("Value")]
+            public string Value { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualGroup
+        {
+            [JsonProperty("displayName")] public string DisplayName { get; set; }
+            [JsonProperty("groupMode")] public string GroupMode { get; set; }
         }
 
         public class Position
@@ -763,6 +1331,8 @@ public static class Rx
             [JsonProperty("referenceLabelValue")] public List<VisualDto.ObjectProperties> ReferenceLabelValue { get; set; }
 
             [JsonProperty("values")] public List<VisualDto.ObjectProperties> Values { get; set; }
+
+            [JsonProperty("y1AxisReferenceLine")] public List<VisualDto.ObjectProperties> Y1AxisReferenceLine { get; set; }
 
 
             [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
@@ -949,6 +1519,51 @@ public static class Rx
 
         public string VisualFilePath { get; set; }
 
+
+        public Boolean isVisualGroup => Content?.VisualGroup != null;
+        public Boolean isGroupedVisual => Content?.ParentGroupName != null;
+
+        public bool IsBilingualVisualGroup()
+        {
+            if (!isVisualGroup || string.IsNullOrEmpty(Content.VisualGroup.DisplayName))
+                return false;
+            return System.Text.RegularExpressions.Regex.IsMatch(Content.VisualGroup.DisplayName, @"^P\d{2}-\d{3}$");
+        }
+
+        public PageExtended ParentPage { get; set; }
+
+        public bool IsInBilingualVisualGroup()
+        {
+            if (ParentPage == null || ParentPage.Visuals == null || Content.ParentGroupName == null)
+                return false;
+            return ParentPage.Visuals.Any(v => v.IsBilingualVisualGroup() && v.Content.Name == Content.ParentGroupName);
+        }
+
+        [JsonIgnore]
+        //this works only with hardcoded altText!
+        public string AltText
+        {
+            get
+            {
+                var general = Content?.VisualContainerObjects?.General;
+                if (general == null || general.Count == 0)
+                    return null;
+                if (!general[0].Properties.ContainsKey("altText"))
+                    return null;
+                return general[0].Properties["altText"]?.Expr?.Literal?.Value;
+            }
+            set
+            {
+                var general = Content?.VisualContainerObjects?.General;
+                if (general == null || general.Count == 0)
+                    return;
+                if (!general[0].Properties.ContainsKey("altText"))
+                    return;
+                if (general[0].Properties["altText"]?.Expr?.Literal != null)
+                    general[0].Properties["altText"].Expr.Literal.Value = value;
+            }
+        }
+
         private IEnumerable<VisualDto.Field> GetAllFields()
         {
             var fields = new List<VisualDto.Field>();
@@ -979,6 +1594,7 @@ public static class Rx
                 fields.AddRange(GetFieldsFromObjectList(objects.Legend));
                 fields.AddRange(GetFieldsFromObjectList(objects.General));
                 fields.AddRange(GetFieldsFromObjectList(objects.ValueAxis));
+                fields.AddRange(GetFieldsFromObjectList(objects.Y1AxisReferenceLine));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabel));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabelDetail));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabelValue));
@@ -1249,7 +1865,8 @@ public static class Rx
                 .Concat(objects?.ReferenceLabel ?? Enumerable.Empty<VisualDto.ObjectProperties>())
                 .Concat(objects?.ReferenceLabelDetail ?? Enumerable.Empty<VisualDto.ObjectProperties>())
                 .Concat(objects?.ReferenceLabelValue ?? Enumerable.Empty<VisualDto.ObjectProperties>())
-                .Concat(objects?.Values ?? Enumerable.Empty<VisualDto.ObjectProperties>());
+                .Concat(objects?.Values ?? Enumerable.Empty<VisualDto.ObjectProperties>())
+                .Concat(objects?.Y1AxisReferenceLine ?? Enumerable.Empty<VisualDto.ObjectProperties>());
 
             foreach (var obj in AllObjectProperties())
             {
@@ -1393,6 +2010,20 @@ public static class Rx
     public class PageExtended
     {
         public PageDto Page { get; set; }
+
+        public ReportExtended ParentReport { get; set; }
+
+        public int PageIndex
+        {
+            get
+            {
+                if (ParentReport == null || ParentReport.PagesConfig == null || ParentReport.PagesConfig.PageOrder == null)
+                    return -1;
+                return ParentReport.PagesConfig.PageOrder.IndexOf(Page.Name);
+            }
+        }
+
+
         public IList<VisualExtended> Visuals { get; set; } = new List<VisualExtended>();
         public string PageFilePath { get; set; }
     }
