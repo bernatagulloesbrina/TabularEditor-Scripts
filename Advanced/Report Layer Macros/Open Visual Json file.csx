@@ -6,10 +6,7 @@ using System.Windows.Forms;
 using Microsoft.VisualBasic;
 using System.IO;
 using Newtonsoft.Json.Linq;
-
 //2025-05-25/B.Agullo
-//2025-06-22/B.Agullo/ updated Class and code to work with visual groups
-
 //this script allows the user to open the JSON file of one or more visuals in the report.
 //see https://www.esbrina-ba.com/pbir-scripts-to-replace-field-and-open-visual-json-files/ for reference on how to use it
 // Step 1: Initialize the report object
@@ -186,7 +183,9 @@ public static class Rx
 
 
 
+    
 
+    
 
     public static VisualExtended DuplicateVisual(VisualExtended visualExtended)
 
@@ -218,7 +217,21 @@ public static class Rx
 
         string originalJson = JsonConvert.SerializeObject(visualExtended.Content, Newtonsoft.Json.Formatting.Indented);
 
-        VisualDto.Root clonedContent = JsonConvert.DeserializeObject<VisualDto.Root>(originalJson);
+        VisualDto.Root clonedContent = 
+
+            JsonConvert.DeserializeObject<VisualDto.Root>(
+
+                originalJson, 
+
+                new JsonSerializerSettings {
+
+                    DefaultValueHandling = DefaultValueHandling.Ignore,
+
+                    NullValueHandling = NullValueHandling.Ignore
+
+
+
+                });
 
 
 
@@ -296,17 +309,21 @@ public static class Rx
 
         // Find minimum X and Y
 
-        int minX = visualsToGroup.Min(v => v.Content.Position != null ? (int)v.Content.Position.X : 0);
+        double minX = visualsToGroup.Min(v => v.Content.Position != null ? (double)v.Content.Position.X : 0);
 
-        int minY = visualsToGroup.Min(v => v.Content.Position != null ? (int)v.Content.Position.Y : 0);
+        double minY = visualsToGroup.Min(v => v.Content.Position != null ? (double)v.Content.Position.Y : 0);
+
+
+
+       //Info("minX:" + minX.ToString() + ", minY: " + minY.ToString());
 
 
 
         // Calculate width and height
 
-        int groupWidth = 0;
+        double groupWidth = 0;
 
-        int groupHeight = 0;
+        double groupHeight = 0;
 
         foreach (var v in visualsToGroup)
 
@@ -316,17 +333,17 @@ public static class Rx
 
             {
 
-                int visualWidth = v.Content.Position != null ? (int)v.Content.Position.Width : 0;
+                double visualWidth = v.Content.Position != null ? (double)v.Content.Position.Width : 0;
 
-                int visualHeight = v.Content.Position != null ? (int)v.Content.Position.Height : 0;
+                double visualHeight = v.Content.Position != null ? (double)v.Content.Position.Height : 0;
 
-                int xOffset = (int)v.Content.Position.X - minX;
+                double xOffset = (double)v.Content.Position.X - (double)minX;
 
-                int yOffset = (int)v.Content.Position.Y - minY;
+                double yOffset = (double)v.Content.Position.Y - (double)minY;
 
-                int totalWidth = xOffset + visualWidth;
+                double totalWidth = xOffset + visualWidth;
 
-                int totalHeight = yOffset + visualHeight;
+                double totalHeight = yOffset + visualHeight;
 
                 if (totalWidth > groupWidth) groupWidth = totalWidth;
 
@@ -343,6 +360,8 @@ public static class Rx
         var groupContent = new VisualDto.Root
 
         {
+
+            Schema = visualsToGroup.FirstOrDefault().Content.Schema,
 
             Name = groupName,
 
@@ -374,6 +393,36 @@ public static class Rx
 
 
 
+        // Set VisualFilePath for the group visual
+
+        // Use the VisualFilePath of the first visual as a template
+
+        string groupVisualFilePath = null;
+
+        var firstVisual = visualsToGroup.FirstOrDefault(v => !string.IsNullOrEmpty(v.VisualFilePath));
+
+        if (firstVisual != null && !string.IsNullOrEmpty(firstVisual.VisualFilePath))
+
+        {
+
+            string originalPath = firstVisual.VisualFilePath;
+
+            string parentDir = Path.GetDirectoryName(Path.GetDirectoryName(originalPath)); // up to 'visuals'
+
+            if (!string.IsNullOrEmpty(parentDir))
+
+            {
+
+                string groupFolder = Path.Combine(parentDir, groupName);
+
+                groupVisualFilePath = Path.Combine(groupFolder, "visual.json");
+
+            }
+
+        }
+
+
+
         // Create the new VisualExtended for the group
 
         var groupVisual = new VisualExtended
@@ -382,7 +431,7 @@ public static class Rx
 
             Content = groupContent,
 
-            VisualFilePath = null // Set as needed by caller
+            VisualFilePath = groupVisualFilePath // Set as described
 
         };
 
@@ -394,17 +443,21 @@ public static class Rx
 
         {
 
+            
+
             if (v.Content == null) continue;
 
             v.Content.ParentGroupName = groupName;
+
+
 
             if (v.Content.Position != null)
 
             {
 
-                v.Content.Position.X = v.Content.Position.X - minX;
+                v.Content.Position.X = v.Content.Position.X - minX + 0;
 
-                v.Content.Position.Y = v.Content.Position.Y - minY;
+                v.Content.Position.Y = v.Content.Position.Y - minY + 0;
 
             }
 
@@ -418,7 +471,7 @@ public static class Rx
 
 
 
-
+    
 
 
 
@@ -604,9 +657,33 @@ public static class Rx
 
 
 
+        string pagesFilePath = Path.Combine(targetPath, "pages.json");
+
+        string pagesJsonContent = File.ReadAllText(pagesFilePath);
+
+        
+
+        if (string.IsNullOrEmpty(pagesJsonContent))
+
+        {
+
+            Error(String.Format("The file '{0}' is empty or does not exist.", pagesFilePath));
+
+            return null;
+
+        }
+
+
+
+        PagesDto pagesDto = JsonConvert.DeserializeObject<PagesDto>(pagesJsonContent);
+
+
+
         ReportExtended report = new ReportExtended();
 
-        report.PagesFilePath = Path.Combine(targetPath, "pages.json");
+        report.PagesFilePath = pagesFilePath;
+
+        report.PagesConfig = pagesDto;
 
 
 
@@ -637,6 +714,10 @@ public static class Rx
                     pageExtended.Page = page;
 
                     pageExtended.PageFilePath = pageJsonPath;
+
+
+
+                    pageExtended.ParentReport = report;
 
 
 
@@ -740,6 +821,26 @@ public static class Rx
 
     {
 
+        return SelectVisualInternal(report, Multiselect: false) as VisualExtended;
+
+    }
+
+
+
+    public static List<VisualExtended> SelectVisuals(ReportExtended report)
+
+    {
+
+        return SelectVisualInternal(report, Multiselect: true) as List<VisualExtended>;
+
+    }
+
+
+
+    private static object SelectVisualInternal(ReportExtended report, bool Multiselect)
+
+    {
+
         // Step 1: Build selection list
 
         var visualSelectionList = report.Pages
@@ -760,45 +861,95 @@ public static class Rx
 
 
 
+        if(visualSelectionList.Count == 0)
+
+        {
+
+            Error("No visuals found in the report.");
+
+            return null;
+
+        }
+
+
+
         // Step 2: Let user choose a visual
 
         var options = visualSelectionList.Select(v => v.Display).ToList();
 
-        string selected = Fx.ChooseString(options);
 
 
 
-        if (string.IsNullOrEmpty(selected))
 
-        {
-
-            Info("You cancelled.");
-
-            return null;
-
-        }
-
-
-
-        // Step 3: Find the selected visual
-
-        var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
-
-
-
-        if (selectedVisual == null)
+        if (Multiselect)
 
         {
 
-            Error("Selected visual not found.");
+            // For multiselect, use ChooseStringMultiple
 
-            return null;
+            var multiSelelected = Fx.ChooseStringMultiple(options);
+
+            if (multiSelelected == null || multiSelelected.Count == 0)
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+            // Find all selected visuals
+
+            var selectedVisuals = visualSelectionList.Where(v => multiSelelected.Contains(v.Display)).Select(v => v.Visual).ToList();
+
+
+
+            return selectedVisuals;
 
         }
 
+        else
+
+        {
+
+            string selected = Fx.ChooseString(options);
 
 
-        return selectedVisual.Visual;
+
+            if (string.IsNullOrEmpty(selected))
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+
+
+            // Step 3: Find the selected visual
+
+            var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
+
+
+
+            if (selectedVisual == null)
+
+            {
+
+                Error("Selected visual not found.");
+
+                return null;
+
+            }
+
+
+
+            return selectedVisual.Visual;
+
+        }
 
     }
 
@@ -930,7 +1081,7 @@ public static class Rx
 
             {
 
-                DefaultValueHandling = DefaultValueHandling.Ignore,
+                //DefaultValueHandling = DefaultValueHandling.Ignore,
 
                 NullValueHandling = NullValueHandling.Ignore
 
@@ -1095,13 +1246,15 @@ public static class Rx
             [JsonProperty("name")] public string Name { get; set; }
             [JsonProperty("position")] public Position Position { get; set; }
             [JsonProperty("visual")] public Visual Visual { get; set; }
-            [JsonProperty("visualContainerObjects")]
-            public VisualContainerObjects VisualContainerObjects { get; set; }
+            
 
             [JsonProperty("visualGroup")] public VisualGroup VisualGroup { get; set; }
             [JsonProperty("parentGroupName")] public string ParentGroupName { get; set; }
             [JsonProperty("filterConfig")] public object FilterConfig { get; set; }
+            [JsonProperty("isHidden")] public bool IsHidden { get; set; }
+
             [JsonExtensionData]
+            
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
 
@@ -1179,10 +1332,12 @@ public static class Rx
 
         public class Visual
         {
-            [JsonProperty("visualType", Order = 1)] public string VisualType { get; set; }
-            [JsonProperty("query", Order = 2)] public Query Query { get; set; }
-            [JsonProperty("objects", Order = 3)] public Objects Objects { get; set; }
-            [JsonProperty("drillFilterOtherVisuals", Order = 4)] public bool DrillFilterOtherVisuals { get; set; }
+            [JsonProperty("visualType")] public string VisualType { get; set; }
+            [JsonProperty("query")] public Query Query { get; set; }
+            [JsonProperty("objects")] public Objects Objects { get; set; }
+            [JsonProperty("visualContainerObjects")]
+            public VisualContainerObjects VisualContainerObjects { get; set; }
+            [JsonProperty("drillFilterOtherVisuals")] public bool DrillFilterOtherVisuals { get; set; }
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
@@ -1540,27 +1695,49 @@ public static class Rx
         }
 
         [JsonIgnore]
-        //this works only with hardcoded altText!
         public string AltText
         {
             get
             {
-                var general = Content?.VisualContainerObjects?.General;
+                var general = Content?.Visual?.VisualContainerObjects?.General;
                 if (general == null || general.Count == 0)
                     return null;
                 if (!general[0].Properties.ContainsKey("altText"))
                     return null;
-                return general[0].Properties["altText"]?.Expr?.Literal?.Value;
+                return general[0].Properties["altText"]?.Expr?.Literal?.Value?.Trim('\'');
             }
             set
             {
-                var general = Content?.VisualContainerObjects?.General;
-                if (general == null || general.Count == 0)
-                    return;
-                if (!general[0].Properties.ContainsKey("altText"))
-                    return;
-                if (general[0].Properties["altText"]?.Expr?.Literal != null)
-                    general[0].Properties["altText"].Expr.Literal.Value = value;
+                if(Content?.Visual == null)
+                    Content.Visual = new VisualDto.Visual();
+
+                // Ensure the structure exists
+                if (Content?.Visual?.VisualContainerObjects == null)
+                    Content.Visual.VisualContainerObjects = new VisualDto.VisualContainerObjects();
+
+                if (Content.Visual?.VisualContainerObjects.General == null || Content.Visual?.VisualContainerObjects.General.Count == 0)
+                    Content.Visual.VisualContainerObjects.General = 
+                        new List<VisualDto.VisualContainerObject> { 
+                            new VisualDto.VisualContainerObject { 
+                                Properties = new Dictionary<string, VisualDto.VisualContainerProperty>() 
+                            } 
+                        };
+
+                var general = Content.Visual.VisualContainerObjects.General[0];
+
+                if (general.Properties == null)
+                    general.Properties = new Dictionary<string, VisualDto.VisualContainerProperty>();
+
+                general.Properties["altText"] = new VisualDto.VisualContainerProperty
+                {
+                    Expr = new VisualDto.VisualExpr
+                    {
+                        Literal = new VisualDto.VisualLiteral
+                        {
+                            Value = value == null ? null : "'" + value.Replace("'", "\\'") + "'"
+                        }
+                    }
+                };
             }
         }
 
