@@ -98,21 +98,21 @@ public static class Fx
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
         return response;
     }
-    public static string ChooseString(IList<string> OptionList, string label = "Choose item")
+    public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
     {
-        return ChooseStringInternal(OptionList, MultiSelect: false, label:label) as string;
+        return ChooseStringInternal(OptionList, MultiSelect: false, label: label, customWidth: customWidth, customHeight:customHeight) as string;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)")
+    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
     {
-        return ChooseStringInternal(OptionList, MultiSelect:true, label:label) as List<string>;
+        return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight) as List<string>;
     }
-    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)")
+    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
     {
         Form form = new Form
         {
             Text =label,
-            Width = 400,
-            Height = 500,
+            Width = customWidth,
+            Height = customHeight,
             StartPosition = FormStartPosition.CenterScreen,
             Padding = new Padding(20)
         };
@@ -504,7 +504,7 @@ public static class Rx
 
     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
 
-    "YourAppName", "recentPbirPaths.json");
+    "Tabular Editor Macro Settings", "recentPbirPaths.json");
 
 
 
@@ -532,13 +532,17 @@ public static class Rx
 
 
 
-        string selected = Fx.ChooseString(options,label:label);
+        string selected = Fx.ChooseString(options,label:label, customWidth:600, customHeight:300);
+
+
+
+        if (selected == null) return null;
 
 
 
         string chosenPath = null;
 
-        if (selected == "Browse for new file..." || string.IsNullOrEmpty(selected))
+        if (selected == "Browse for new file..." )
 
         {
 
@@ -642,17 +646,9 @@ public static class Rx
 
         string basePath = Rx.GetPbirFilePathWithHistory(label:label);
 
-        if (basePath == null)
+        if (basePath == null) return null; 
 
-        {
-
-            Error("Operation canceled by the user.");
-
-            return null;
-
-        }
-
-
+        
 
         // Define the target path  
 
@@ -846,6 +842,26 @@ public static class Rx
 
     {
 
+        return SelectVisualInternal(report, Multiselect: false) as VisualExtended;
+
+    }
+
+
+
+    public static List<VisualExtended> SelectVisuals(ReportExtended report)
+
+    {
+
+        return SelectVisualInternal(report, Multiselect: true) as List<VisualExtended>;
+
+    }
+
+
+
+    private static object SelectVisualInternal(ReportExtended report, bool Multiselect)
+
+    {
+
         // Step 1: Build selection list
 
         var visualSelectionList = report.Pages
@@ -854,7 +870,25 @@ public static class Rx
 
             {
 
-                Display = string.Format("{0} - {1} ({2}, {3})", p.Page.DisplayName, v.Content.Visual.VisualType, (int)v.Content.Position.X, (int)v.Content.Position.Y),
+                //use visual type for regular visuals, displayname for groups
+
+                Display = string.Format(
+
+                    "{0} - {1} ({2}, {3})", 
+
+                    p.Page.DisplayName, 
+
+                    v?.Content?.Visual?.VisualType
+
+                        ?? v?.Content?.VisualGroup?.DisplayName,
+
+                    (int)v.Content.Position.X, 
+
+                    (int)v.Content.Position.Y),
+
+
+
+
 
                 Page = p,
 
@@ -866,45 +900,95 @@ public static class Rx
 
 
 
+        if(visualSelectionList.Count == 0)
+
+        {
+
+            Error("No visuals found in the report.");
+
+            return null;
+
+        }
+
+
+
         // Step 2: Let user choose a visual
 
         var options = visualSelectionList.Select(v => v.Display).ToList();
 
-        string selected = Fx.ChooseString(options);
 
 
 
-        if (string.IsNullOrEmpty(selected))
 
-        {
-
-            Info("You cancelled.");
-
-            return null;
-
-        }
-
-
-
-        // Step 3: Find the selected visual
-
-        var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
-
-
-
-        if (selectedVisual == null)
+        if (Multiselect)
 
         {
 
-            Error("Selected visual not found.");
+            // For multiselect, use ChooseStringMultiple
 
-            return null;
+            var multiSelelected = Fx.ChooseStringMultiple(options);
+
+            if (multiSelelected == null || multiSelelected.Count == 0)
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+            // Find all selected visuals
+
+            var selectedVisuals = visualSelectionList.Where(v => multiSelelected.Contains(v.Display)).Select(v => v.Visual).ToList();
+
+
+
+            return selectedVisuals;
 
         }
 
+        else
+
+        {
+
+            string selected = Fx.ChooseString(options);
 
 
-        return selectedVisual.Visual;
+
+            if (string.IsNullOrEmpty(selected))
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+
+
+            // Step 3: Find the selected visual
+
+            var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
+
+
+
+            if (selectedVisual == null)
+
+            {
+
+                Error("Selected visual not found.");
+
+                return null;
+
+            }
+
+
+
+            return selectedVisual.Visual;
+
+        }
 
     }
 
