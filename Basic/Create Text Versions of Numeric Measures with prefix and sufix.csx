@@ -1,5 +1,6 @@
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
+
 using Microsoft.VisualBasic;
 
 //2025-07-28/B.Agullo
@@ -13,14 +14,14 @@ if (Selected.Measures.Count() == 0)
 }
 // Ask user for prefix
 string prefix = Fx.GetNameFromUser(
-    Prompt: "Enter a prefix for the new text measures:",
+    Prompt: "Enter a prefix for the new text measures (use ### for current measure name):",
     Title: "Text Measure Prefix",
     DefaultResponse: ""
 );
 if (prefix == null) return;
 // Ask user for suffix
 string suffix = Fx.GetNameFromUser(
-    Prompt: "Enter a suffix for the new text measures:",
+    Prompt: "Enter a suffix for the new text measures (use ### for current measure name):",
     Title: "Text Measure Suffix",
     DefaultResponse: ""
 );
@@ -36,7 +37,13 @@ foreach (Measure m in Selected.Measures)
 {
     string newMeasureName = m.Name + measureNameSuffix;
     string newMeasureDisplayFolder = (m.DisplayFolder + measureNameSuffix).Trim();
-    string newMeasureExpression = String.Format(@"""{2}"" & FORMAT([{0}], ""{1}"") & ""{3}""", m.Name, m.FormatString, prefix, suffix);
+    string newMeasureExpression = 
+        String.Format(
+            @"""{2}"" & FORMAT([{0}], ""{1}"") & ""{3}""", 
+            m.Name, 
+            m.FormatString, 
+            prefix.Replace("###", m.Name), 
+            suffix.Replace("###",m.Name));
     Measure newMeasure = m.Table.AddMeasure(newMeasureName, newMeasureExpression,newMeasureDisplayFolder);
     newMeasure.FormatDax();
 }
