@@ -3,6 +3,10 @@ using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
 
+//2025-09-16/B.Agullo/
+//Creates measures based on DAX UDFs 
+//Check the blog post for futher information: https://www.esbrina-ba.com/automatically-create-measures-with-dax-user-defined-functions/
+
 // PSEUDOCODE / PLAN:
 // 1. Verify that the user has selected one or more functions (Selected.Functions).
 // 2. If none selected, show error and abort.
