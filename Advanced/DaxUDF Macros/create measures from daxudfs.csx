@@ -52,7 +52,7 @@ IList<FunctionParameter> distinctParameters = allParametersFlat
 var parameterObjectsMap = new Dictionary<string, (IList<string> Values, string Type)>();
 foreach (var param in distinctParameters)
 {
-    string selectionType = "Any";
+    string selectionType = null;
     if (param.Name.ToUpper().Contains("MEASURE"))
     {
         selectionType = "Measure";
@@ -242,9 +242,10 @@ public static class Fx
                 return (Values:SelectColumnMultiple(model, label: prompt2), Type: selectionType);
             case "Measure":
                 return (Values: SelectMeasureMultiple(model: model, label: prompt2), Type: selectionType);
-            //case "Scalar":
-            //    selectedType = "Scalar";
-            //    return GetNameFromUser("Enter scalar value", "Scalar value", "0");
+            case "Scalar":
+                IList<string> scalarList = new List<string>();
+                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));  
+                return (Values: scalarList, Type: selectionType);
             default:
                 Error("Invalid selection type");
                 return returnEmpty;
