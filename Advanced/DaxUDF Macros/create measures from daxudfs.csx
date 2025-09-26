@@ -1,7 +1,7 @@
 #r "Microsoft.VisualBasic"
 
 using System.Windows.Forms;
-
+using System.Text.RegularExpressions;
 using Microsoft.VisualBasic;
 //2025-09-26/B.Agullo/ fixed bug that would not store annotations if initialized during runtime
 //2025-09-16/B.Agullo/
@@ -180,6 +180,8 @@ foreach (var func in selectedFunctions)
     {
         for (int i = 0; i < currentList.Count; i++)
         {
+            //It normalizes a folder/display-folder string by collapsing repeated slashes, removing leading/trailing backslashes and trimming whitespace.
+            string cleanCurrentDisplayFolder = Regex.Replace(currentDisplayFolders[i], @"[\\/]+", @"\").Trim('\\').Trim();
             Measure measure = currentDestinationTables[i].AddMeasure(currentListNames[i], currentList[i] + ")");
             measure.FormatDax();
             measure.Description = String.Format("Measure created with {0} function. Check function for details.", func.Name);
@@ -457,7 +459,7 @@ public static class Fx
             else
             {
                 nameTemplateDefault = string.Join(" ", Parameters.Select(p => p.Name + "Name"));
-                formatStringDefault = Parameters[0].Name + "FormatString";
+                formatStringDefault = Parameters[0].Name + "FormatStringRoot";
                 displayFolderDefault = 
                     String.Format(
                         @"{0}DisplayFolder/{1}Name {2}", 
