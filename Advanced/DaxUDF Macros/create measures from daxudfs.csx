@@ -1,12 +1,12 @@
 #r "Microsoft.VisualBasic"
+
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
-
+//2025-09-26/B.Agullo/ fixed bug that would not store annotations if initialized during runtime
 //2025-09-16/B.Agullo/
 //Creates measures based on DAX UDFs 
 //Check the blog post for futher information: https://www.esbrina-ba.com/automatically-create-measures-with-dax-user-defined-functions/
-
 // PSEUDOCODE / PLAN:
 // 1. Verify that the user has selected one or more functions (Selected.Functions).
 // 2. If none selected, show error and abort.
@@ -101,27 +101,36 @@ foreach (var func in selectedFunctions)
             {
                 //extract original name and format string if the parameter is a measure
                 string paramRawName = o;
-                string paramFormatString = "";
+                string paramFormatStringFull = "";
+                string paramFormatStringRoot = "";
                 string paramDisplayFolder = "";
                 if (paramObject.Type == "Measure")
                 {
                     Measure m = Model.AllMeasures.FirstOrDefault(m => m.DaxObjectFullName == o);
                     paramRawName = m.Name;
-                    paramFormatString = m.FormatString;
+                    paramFormatStringFull = m.FormatString;
                     paramDisplayFolder = m.DisplayFolder;
                 }else if (paramObject.Type == "Column")
                 {
                     Column c = Model.AllColumns.FirstOrDefault(c => c.DaxObjectFullName == o);
                     paramRawName = c.Name;
-                    paramFormatString = c.FormatString;
+                    paramFormatStringFull = c.FormatString;
                     paramDisplayFolder = c.DisplayFolder;
                 }
                 else if (paramObject.Type == "Table")
                 {
                     Table t = Model.Tables.FirstOrDefault(t => t.Name == o);
                     paramRawName = t.Name;
-                    paramFormatString = "";
+                    paramFormatStringFull = "";
                     paramDisplayFolder = "";
+                }
+                if (paramFormatStringFull.Contains(";"))
+                {
+                    paramFormatStringRoot = paramFormatStringFull.Split(';')[0];
+                }
+                else
+                {
+                    paramFormatStringRoot = paramFormatStringFull;
                 }
                 if (destinationSet == false)
                 {
@@ -139,12 +148,11 @@ foreach (var func in selectedFunctions)
                     string displayFolder = "";
                     if (func.OutputDisplayFolder != null)
                     {
-                        displayFolder = 
+                        displayFolder =
                             func.OutputDisplayFolder
                                 .Replace(param.Name + "Name", paramRawName)
                                 .Replace(param.Name + "DisplayFolder", paramDisplayFolder);
-                    }
-                    ;
+                    };
                     currentDisplayFolders.Add(displayFolder);
                 }
                 else
@@ -155,8 +163,9 @@ foreach (var func in selectedFunctions)
                 currentList.Add(s + delimiter + o);
                 currentListNames.Add(sName.Replace(param.Name + "Name", paramRawName));
                 currentFormatStrings.Add(
-                    func.OutputFormatString.Replace(
-                        param.Name + "FormatString",paramFormatString));
+                    func.OutputFormatString
+                        .Replace(param.Name + "FormatStringFull", paramFormatStringFull)
+                        .Replace(param.Name + "FormatStringRoot", paramFormatStringRoot));
             }
             destinationSet = true;
         }
@@ -428,6 +437,38 @@ public static class Fx
         public static FunctionExtended CreateFunctionExtended(Function function)
         {
 
+            FunctionExtended emptyFunction = null as FunctionExtended;
+            List<FunctionParameter> Parameters =  ExtractParametersFromExpression (function.Expression);
+
+            string nameTemplateDefault = "";
+            string formatStringDefault = "";
+            string displayFolderDefault = "";
+            string functionNameShort = function.Name;
+            if(function.Name.IndexOf(".") > 0)
+            {
+                functionNameShort = function.Name.Substring(function.Name.LastIndexOf(".") + 1);
+            }
+
+            if (Parameters.Count == 0) {
+                nameTemplateDefault = function.Name;
+                formatStringDefault = "";
+                displayFolderDefault = "";
+            }
+            else
+            {
+                nameTemplateDefault = string.Join(" ", Parameters.Select(p => p.Name + "Name"));
+                formatStringDefault = Parameters[0].Name + "FormatString";
+                displayFolderDefault = 
+                    String.Format(
+                        @"{0}DisplayFolder/{1}Name {2}", 
+                        Parameters[0].Name, 
+                        Parameters[0].Name,
+                        functionNameShort);
+            };
+            
+            
+
+
             string myOutputType = function.GetAnnotation("outputType"); 
             string myNameTemplate = function.GetAnnotation("nameTemplate");
             string myFormatString = function.GetAnnotation("formatString");
@@ -437,19 +478,28 @@ public static class Fx
             {
                 IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "None" };
                 myOutputType = Fx.ChooseString(selectionTypeOptions, label: "Choose output type for function" + function.Name, customWidth: 600);
+                if (string.IsNullOrEmpty(myOutputType)) return emptyFunction;
+                function.SetAnnotation("outputType", myOutputType);
             }
 
             if (string.IsNullOrEmpty(myNameTemplate))
             {
-                myNameTemplate = Fx.GetNameFromUser(Prompt:"Enter output name template for function " + function.Name,  "Name Template", "(use parameternameName as placeholder)");
+                myNameTemplate = Fx.GetNameFromUser(Prompt:"Enter output name template for function " + function.Name,  "Name Template", nameTemplateDefault);
+                if (string.IsNullOrEmpty(myNameTemplate)) return emptyFunction;
+                function.SetAnnotation("nameTemplate", myNameTemplate);
             }
             if(string.IsNullOrEmpty(myFormatString))
             {
-                myFormatString = Fx.GetNameFromUser(Prompt: "Enter output format string for function " + function.Name, "Format String", "(use parameternameFormatString as placeholder)");
+                myFormatString = Fx.GetNameFromUser(Prompt: "Enter output format string for function " + function.Name, "Format String", formatStringDefault);
+                if (string.IsNullOrEmpty(myFormatString)) return emptyFunction;
+                function.SetAnnotation("formatString", myFormatString);
+
             }
             if(string.IsNullOrEmpty(myDisplayFolder))
             {
-                myDisplayFolder = Fx.GetNameFromUser(Prompt: "Enter output display folder for function " + function.Name, "Display Folder", "(use parameternameName and parameternameDisplayFolder as placeholder)");
+                myDisplayFolder = Fx.GetNameFromUser(Prompt: "Enter output display folder for function " + function.Name, "Display Folder", displayFolderDefault);
+                if (string.IsNullOrEmpty(myDisplayFolder)) return emptyFunction;
+                function.SetAnnotation("displayFolder", myDisplayFolder);
             }
 
             var functionExtended = new FunctionExtended
@@ -457,7 +507,7 @@ public static class Fx
                 Name = function.Name,
                 Expression = function.Expression,
                 Description = function.Description,
-                Parameters = ExtractParametersFromExpression(function.Expression),
+                Parameters = Parameters,
                 OutputFormatString = function.GetAnnotation("formatString"),
                 OutputNameTemplate = function.GetAnnotation("nameTemplate"),
                 OutputType = function.GetAnnotation("outputType"),
