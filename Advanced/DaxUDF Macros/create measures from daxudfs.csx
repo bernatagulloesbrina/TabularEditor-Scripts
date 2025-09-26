@@ -52,8 +52,22 @@ IList<FunctionParameter> distinctParameters = allParametersFlat
 var parameterObjectsMap = new Dictionary<string, (IList<string> Values, string Type)>();
 foreach (var param in distinctParameters)
 {
+    string selectionType = "Any";
+    if (param.Name.ToUpper().Contains("MEASURE"))
+    {
+        selectionType = "Measure";
+    }
+    else if (param.Name.ToUpper().Contains("COLUMN"))
+    {
+        selectionType = "Column";
+    }
+    else if (param.Name.ToUpper().Contains("TABLE"))
+    {
+        selectionType = "Table";
+    }
     (IList<string> Values,string Type) selectedObjectsForParam = Fx.SelectAnyObjects(
         Model,
+        selectionType: selectionType,
         prompt1: String.Format(@"Select object type for {0} parameter", param.Name),
         prompt2: String.Format(@"Select item for {0} parameter", param.Name),
         placeholderValue: param.Name
