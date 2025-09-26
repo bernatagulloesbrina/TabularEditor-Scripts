@@ -199,7 +199,7 @@ foreach (var func in selectedFunctions)
             Measure measure = currentDestinationTables[i].AddMeasure(currentListNames[i], currentList[i] + ")");
             measure.FormatDax();
             measure.Description = String.Format("Measure created with {0} function. Check function for details.", func.Name);
-            measure.DisplayFolder = currentDisplayFolders[i];
+            measure.DisplayFolder = cleanCurrentDisplayFolder;
             measure.FormatString = currentFormatStrings[i];
         }
     }else
