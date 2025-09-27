@@ -81,24 +81,25 @@ foreach (var param in distinctParameters)
 }
 foreach (var func in selectedFunctions)
 {
-    IList<string> previousList = new List<string>() { func.Name + "(" };
-    IList<string> previousListNames = new List<string>() { func.OutputNameTemplate };
-    IList<string> currentList = new List<string>();
-    IList<string> currentListNames = new List<string>();
     string delimiter = "";
-    IList<Table> previousDestinationTables = new List<Table>();
-    IList<Table> currentDestinationTables = new List<Table>();
-    IList<string> previousDisplayFolders = new List<string>();
+    IList<string> previousList = new List<string>() { func.Name + "(" };
+    IList<string> currentList = new List<string>();
+    IList<string> previousListNames = new List<string>() { func.OutputNameTemplate };
+    IList<string> currentListNames = new List<string>();
+    IList<string> previousDestinations = new List<string>() { func.OutputDestination };
+    IList<string> currentDestinations = new List<string>();
+    IList<string> previousDisplayFolders = new List<string>() { func.OutputDisplayFolder };
     IList<string> currentDisplayFolders = new List<string>();
+    IList<string> previousFormatStrings = new List<string>() { func.OutputFormatString };
     IList<string> currentFormatStrings = new List<string>();
-    IList<string> previousFormatStrings = new List<string>();
     // When iterating the parameters of this specific function, use the mapping created for distinct parameters.
     foreach (var param in func.Parameters)
     {
         currentList = new List<string>(); //reset current list
         currentListNames = new List<string>();
-        currentDestinationTables = new List<Table>();
         currentFormatStrings = new List<string>();
+        currentDestinations = new List<string>();
+        currentDisplayFolders = new List<string>();
         // Retrieve the objects list for this parameter name from the map (prompting was done earlier)
         (IList<string> Values, string Type) paramObject;
         if (!parameterObjectsMap.TryGetValue(param.Name, out paramObject) || paramObject.Type == null || paramObject.Values.Count == 0)
@@ -106,37 +107,53 @@ foreach (var func in selectedFunctions)
             Error(String.Format("No objects were selected earlier for parameter '{0}'.", param.Name));
             return;
         }
-        bool destinationSet = false;
         for (int i = 0; i < previousList.Count; i++)
         {
             string s = previousList[i];
             string sName = previousListNames[i];
+            string sFormatString = previousFormatStrings[i];
+            string sDisplayFolder = previousDisplayFolders[i];
+            string sDestination = previousDestinations[i];
             foreach (var o in paramObject.Values)
             {
                 //extract original name and format string if the parameter is a measure
-                string paramRawName = o;
+                string paramName = o;
                 string paramFormatStringFull = "";
                 string paramFormatStringRoot = "";
                 string paramDisplayFolder = "";
+                string paramTable = "";
+                //prepare placeholder
+                string paramNamePlaceholder = param.Name + "Name";
+                string paramFormatStringRootPlaceholder = param.Name + "FormatStringRoot";
+                string paramFormatStringFullPlaceholder = param.Name + "FormatStringFull";
+                string paramDisplayFolderPlaceholder = param.Name + "DisplayFolder";
+                string paramTablePlaceholder = "";
                 if (paramObject.Type == "Measure")
                 {
                     Measure m = Model.AllMeasures.FirstOrDefault(m => m.DaxObjectFullName == o);
-                    paramRawName = m.Name;
+                    paramName = m.Name;
                     paramFormatStringFull = m.FormatString;
                     paramDisplayFolder = m.DisplayFolder;
-                }else if (paramObject.Type == "Column")
+                    paramTable = m.Table.DaxObjectFullName;
+                    paramTablePlaceholder = param.Name + "Table";
+                }
+                else if (paramObject.Type == "Column")
                 {
                     Column c = Model.AllColumns.FirstOrDefault(c => c.DaxObjectFullName == o);
-                    paramRawName = c.Name;
+                    paramName = c.Name;
                     paramFormatStringFull = c.FormatString;
                     paramDisplayFolder = c.DisplayFolder;
+                    paramTable = c.Table.DaxObjectFullName;
+                    paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Table")
                 {
-                    Table t = Model.Tables.FirstOrDefault(t => t.Name == o);
-                    paramRawName = t.Name;
+                    Table t = Model.Tables.FirstOrDefault(t => t.DaxObjectFullName == o);
+                    paramName = t.Name;
                     paramFormatStringFull = "";
                     paramDisplayFolder = "";
+                    paramTable = t.DaxObjectFullName;
+                    paramTablePlaceholder = param.Name;
                 }
                 if (paramFormatStringFull.Contains(";"))
                 {
@@ -146,49 +163,43 @@ foreach (var func in selectedFunctions)
                 {
                     paramFormatStringRoot = paramFormatStringFull;
                 }
-                if (destinationSet == false)
-                {
-                    Table destinationTable = null;
-                    if (param.Name.ToUpper().Contains("MEASURE"))
-                    {
-                        var m = Model.AllMeasures.FirstOrDefault(me => me.DaxObjectFullName == o);
-                        if (m != null) destinationTable = m.Table;
-                    }
-                    else
-                    {
-                        destinationTable = SelectTable(label: "Select destination table for " + func.OutputType + "(s) created for " + o);
-                    }
-                    currentDestinationTables.Add(destinationTable);
-                    string displayFolder = "";
-                    if (func.OutputDisplayFolder != null)
-                    {
-                        displayFolder =
-                            func.OutputDisplayFolder
-                                .Replace(param.Name + "Name", paramRawName)
-                                .Replace(param.Name + "DisplayFolder", paramDisplayFolder);
-                    };
-                    currentDisplayFolders.Add(displayFolder);
-                }
-                else
-                {
-                    currentDestinationTables.Add(previousDestinationTables[i]);
-                    currentDisplayFolders.Add(previousDisplayFolders[i]);
-                }
                 currentList.Add(s + delimiter + o);
-                currentListNames.Add(sName.Replace(param.Name + "Name", paramRawName));
+                currentListNames.Add(sName.Replace(paramNamePlaceholder, paramName));
                 currentFormatStrings.Add(
-                    func.OutputFormatString
-                        .Replace(param.Name + "FormatStringFull", paramFormatStringFull)
-                        .Replace(param.Name + "FormatStringRoot", paramFormatStringRoot));
+                    sFormatString
+                        .Replace(paramFormatStringFullPlaceholder, paramFormatStringFull)
+                        .Replace(paramFormatStringRootPlaceholder, paramFormatStringRoot));
+                currentDisplayFolders.Add(
+                    sDisplayFolder
+                        .Replace(paramNamePlaceholder, paramName)
+                        .Replace(paramDisplayFolderPlaceholder, paramDisplayFolder));
+                currentDestinations.Add(
+                    sDestination.Replace(paramTablePlaceholder, paramTable));
             }
-            destinationSet = true;
         }
         delimiter = ", ";
         previousList = currentList;
         previousListNames = currentListNames;
-        previousDestinationTables = currentDestinationTables;
+        previousDestinations = currentDestinations;
         previousDisplayFolders = currentDisplayFolders;
         previousFormatStrings = currentFormatStrings;
+    }
+    IList<Table> currentDestinationTables = new List<Table>();
+    if(func.OutputType == "Measure" || func.OutputType == "Column")
+    {
+        for (int i = 0; i < currentDestinations.Count; i++)
+        {
+            //transform to actual tables, initialize if necessary
+            Table destinationTable = Model.Tables.Where(
+                t => t.DaxObjectFullName == currentDestinations[i])
+                .FirstOrDefault();
+            if (destinationTable == null)
+            {
+                destinationTable = SelectTable(label: "Select destinatoin table for " + func.OutputType + " " + currentListNames[i]);
+                if (destinationTable == null) return;
+            }
+            currentDestinationTables.Add(destinationTable);
+        }
     }
     if (func.OutputType == "Measure")
     {
@@ -202,7 +213,21 @@ foreach (var func in selectedFunctions)
             measure.DisplayFolder = cleanCurrentDisplayFolder;
             measure.FormatString = currentFormatStrings[i];
         }
-    }else
+    }
+    else if (func.OutputType == "Column") 
+    {
+        for (int i = 0; i < currentList.Count; i++)
+        {
+            //It normalizes a folder/display-folder string by collapsing repeated slashes, removing leading/trailing backslashes and trimming whitespace.
+            string cleanCurrentDisplayFolder = Regex.Replace(currentDisplayFolders[i], @"[/]+", @"").Trim('\\').Trim();
+            Column column = currentDestinationTables[i].AddCalculatedColumn(currentListNames[i], currentList[i] + ")");
+            //column.FormatDax();
+            column.Description = String.Format("Column created with {0} function. Check function for details.", func.Name);
+            column.DisplayFolder = cleanCurrentDisplayFolder;
+            column.FormatString = currentFormatStrings[i];
+        }
+    }
+    else
     {
         Info("Not implemented yet for output types other than Measure.");
     }
@@ -234,28 +259,35 @@ public static class Fx
             selectionType = ChooseString(selectionTypeOptions, label: prompt1, customWidth: 600);
         }
         if (selectionType == null) return returnEmpty;
+        IList<string> selectedValues = new List<string>();
         switch (selectionType)
         {
             case "Table":
-                return (Values:SelectTableMultiple(model, label: prompt2), Type:selectionType);
+                selectedValues = SelectTableMultiple(model, label: prompt2);
+                break;
             case "Column":
-                return (Values:SelectColumnMultiple(model, label: prompt2), Type: selectionType);
+                selectedValues = SelectColumnMultiple(model, label: prompt2);
+                break;
             case "Measure":
-                return (Values: SelectMeasureMultiple(model: model, label: prompt2), Type: selectionType);
+                selectedValues = SelectMeasureMultiple(model: model, label: prompt2);
+                break;
             case "Scalar":
                 IList<string> scalarList = new List<string>();
-                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));  
-                return (Values: scalarList, Type: selectionType);
+                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));
+                selectedValues = scalarList;
+                break;
             default:
                 Error("Invalid selection type");
                 return returnEmpty;
         }
+        if (selectedValues.Count == 0) return returnEmpty; 
+        return (Values:selectedValues, Type:selectionType);
     }
     public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
     {
         return ChooseStringInternal(OptionList, MultiSelect: false, label: label, customWidth: customWidth, customHeight:customHeight) as string;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
+    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 650, int customHeight = 550)
     {
         return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight) as List<string>;
     }
@@ -264,8 +296,6 @@ public static class Fx
         Form form = new Form
         {
             Text =label,
-            Width = customWidth,
-            Height = customHeight,
             StartPosition = FormStartPosition.CenterScreen,
             Padding = new Padding(20)
         };
@@ -280,14 +310,14 @@ public static class Fx
         FlowLayoutPanel buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 40,
+            Height = 70,
             FlowDirection = FlowDirection.LeftToRight,
             Padding = new Padding(10)
         };
-        Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect };
-        Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect };
-        Button okButton = new Button { Text = "OK", DialogResult = DialogResult.OK };
-        Button cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel };
+        Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect , Height = 50, Width = 150};
+        Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect, Height = 50, Width = 150 };
+        Button okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Height = 50, Width = 100 };
+        Button cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Height = 50, Width = 100 };
         selectAllButton.Click += delegate
         {
             for (int i = 0; i < listbox.Items.Count; i++)
@@ -304,6 +334,8 @@ public static class Fx
         buttonPanel.Controls.Add(cancelButton);
         form.Controls.Add(listbox);
         form.Controls.Add(buttonPanel);
+        form.Width = customWidth;
+        form.Height = customHeight;
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
@@ -351,18 +383,18 @@ public static class Fx
         var filteredColumns = columns.Where(c => lambda(c));
         return filteredColumns.Any() || returnAllIfNoneFound ? filteredColumns : null;
     }
-    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)", int customWidth = 400)
+    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
     {
         measures ??= model.AllMeasures;
         IList<string> measureNames = measures.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedMeasureNames = ChooseStringMultiple(measureNames, label: label, customWidth:customWidth);
+        IList<string> selectedMeasureNames = ChooseStringMultiple(measureNames, label: label);
         return selectedMeasureNames; 
     }
-    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)", int customWidth = 400)
+    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
     {
         columns ??= model.AllColumns;
         IList<string> columnNames = columns.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label, customWidth: customWidth);
+        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label);
         return selectedColumnNames;
     }
     public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400)
@@ -385,6 +417,8 @@ public static class Fx
         public string OutputNameTemplate { get; set; }
         public string OutputType { get; set; }
         public string OutputDisplayFolder { get; set; }
+
+        public string OutputDestination { get; set; } 
         public Function OriginalFunction { get; set; }
         public List<FunctionParameter> Parameters { get; set; }
         private static List<FunctionParameter> ExtractParametersFromExpression(string expression)
@@ -461,6 +495,8 @@ public static class Fx
             string formatStringDefault = "";
             string displayFolderDefault = "";
             string functionNameShort = function.Name;
+            string destinationDefault = ""; 
+
             if(function.Name.IndexOf(".") > 0)
             {
                 functionNameShort = function.Name.Substring(function.Name.LastIndexOf(".") + 1);
@@ -470,17 +506,43 @@ public static class Fx
                 nameTemplateDefault = function.Name;
                 formatStringDefault = "";
                 displayFolderDefault = "";
+                destinationDefault = "";
             }
             else
             {
                 nameTemplateDefault = string.Join(" ", Parameters.Select(p => p.Name + "Name"));
-                formatStringDefault = Parameters[0].Name + "FormatStringRoot";
+                if(function.Name.Contains("Pct"))
+                {
+                    formatStringDefault = "+0.0%;-0.0%;-";
+                }
+                else
+                {
+                    formatStringDefault = Parameters[0].Name + "FormatStringRoot";
+                }
+
+
+                    
                 displayFolderDefault = 
                     String.Format(
                         @"{0}DisplayFolder/{1}Name {2}", 
                         Parameters[0].Name, 
                         Parameters[0].Name,
                         functionNameShort);
+                
+                if (Parameters[0].Name.ToUpper().Contains("TABLE"))
+                {
+                    destinationDefault = Parameters[0].Name;
+                }
+                else if (Parameters[0].Name.ToUpper().Contains("MEASURE") || Parameters[0].Name.ToUpper().Contains("COLUMN"))
+                {
+                    destinationDefault = Parameters[0].Name + "Table";
+                }
+                else
+                {
+                    destinationDefault = "Custom";
+                }
+                
+
             };
             
             
@@ -490,11 +552,16 @@ public static class Fx
             string myNameTemplate = function.GetAnnotation("nameTemplate");
             string myFormatString = function.GetAnnotation("formatString");
             string myDisplayFolder = function.GetAnnotation("displayFolder");
+            string myOutputDestination = function.GetAnnotation("outputDestination");
 
-            if(string.IsNullOrEmpty(myOutputType))
+            if (string.IsNullOrEmpty(myOutputType))
             {
                 IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "None" };
-                myOutputType = Fx.ChooseString(selectionTypeOptions, label: "Choose output type for function" + function.Name, customWidth: 600);
+                myOutputType = 
+                    Fx.ChooseString(
+                        OptionList: selectionTypeOptions, 
+                        label: "Choose output type for function" + function.Name, 
+                        customWidth: 600);
                 if (string.IsNullOrEmpty(myOutputType)) return emptyFunction;
                 function.SetAnnotation("outputType", myOutputType);
             }
@@ -514,10 +581,35 @@ public static class Fx
             }
             if(string.IsNullOrEmpty(myDisplayFolder))
             {
-                myDisplayFolder = Fx.GetNameFromUser(Prompt: "Enter output display folder for function " + function.Name, "Display Folder", displayFolderDefault);
+                myDisplayFolder = 
+                    Fx.GetNameFromUser(
+                        Prompt: "Enter output display folder for function " + function.Name, 
+                        Title:"Display Folder", 
+                        DefaultResponse: displayFolderDefault);
+
                 if (string.IsNullOrEmpty(myDisplayFolder)) return emptyFunction;
                 function.SetAnnotation("displayFolder", myDisplayFolder);
             }
+
+            if (string.IsNullOrEmpty(myOutputDestination))
+            {
+                if(myOutputType ==  "Table")
+                {
+                    myOutputDestination = "Model";
+                }
+                else if(myOutputType == "Column" ||  myOutputType == "Measure")
+                {
+                    myOutputDestination = 
+                        Fx.GetNameFromUser(
+                            Prompt: "Enter Destination template for " + function.Name, 
+                            Title:"Destination", 
+                            DefaultResponse: destinationDefault);
+
+                    if(string.IsNullOrEmpty(myOutputDestination)) return emptyFunction;
+                    function.SetAnnotation("outputDestination", destinationDefault);
+                }
+            }
+
 
             var functionExtended = new FunctionExtended
             {
@@ -525,10 +617,11 @@ public static class Fx
                 Expression = function.Expression,
                 Description = function.Description,
                 Parameters = Parameters,
-                OutputFormatString = function.GetAnnotation("formatString"),
-                OutputNameTemplate = function.GetAnnotation("nameTemplate"),
-                OutputType = function.GetAnnotation("outputType"),
-                OutputDisplayFolder = function.GetAnnotation("displayFolder"),
+                OutputFormatString = myFormatString,
+                OutputNameTemplate = myNameTemplate,
+                OutputType = myOutputType,
+                OutputDisplayFolder = myDisplayFolder,
+                OutputDestination = myOutputDestination,
                 OriginalFunction = function
 
             };
