@@ -7,6 +7,7 @@ using Microsoft.VisualBasic;
 // It also creates a hidden calculated column and measure in the date table to handle cases where the fact table has no data for some dates.
 // The script assumes there is a date table and a fact table in the model.
 // The script will prompt the user to select the main date column in the fact table if there are multiple date columns.
+// More details at: https://www.esbrina-ba.com/industrializing-model-dependent-dax-udfs-with-tabular-editor-c-scripting-time-intel-reloaded/
 if(Model.Database.CompatibilityLevel < 1702)
 {
     if(Fx.IsAnswerYes("The model compatibility level is below 1702. Time Intelligence functions are only supported in 1702 or higher. Do to change the compatibility level to 1702?"))
@@ -73,7 +74,7 @@ Measure dateTableAuxMeasure = dateTable.AddMeasure(dateTableAuxMeasureName, date
 dateTableAuxMeasure.IsHidden = true;
 dateTableAuxMeasure.FormatDax();
 //CY --just for the sake of completion 
-string CYfunctionName = "Model.TimeIntel.CY";
+string CYfunctionName = "Local.TimeIntel.CY";
 string CYfunctionExpression = "(baseMeasure) => baseMeasure";
 Function CYfunction = Model.AddFunction(CYfunctionName);
 CYfunction.Expression = CYfunctionExpression;
@@ -84,7 +85,7 @@ CYfunction.SetAnnotation("outputType", "Measure");
 CYfunction.SetAnnotation("nameTemplate", "baseMeasureName CY");
 CYfunction.SetAnnotation("outputDestination", "baseMeasureTable");
 //PY
-string PYfunctionName = "Model.TimeIntel.PY";
+string PYfunctionName = "Local.TimeIntel.PY";
 string PYfunctionExpression = 
     String.Format(
         @"(baseMeasure: ANYREF) =>
@@ -114,11 +115,11 @@ PYfunction.SetAnnotation("outputType", "Measure");
 PYfunction.SetAnnotation("nameTemplate", "baseMeasureName PY");
 PYfunction.SetAnnotation("outputDestination", "baseMeasureTable");
 //YOY
-string YOYfunctionName = "Model.TimeIntel.YOY";
+string YOYfunctionName = "Local.TimeIntel.YOY";
 string YOYfunctionExpression =
     @"(baseMeasure: ANYREF) =>
-    VAR ValueCurrentPeriod = Model.TimeIntel.CY(baseMeasure)
-    VAR ValuePreviousPeriod = Model.TimeIntel.PY(baseMeasure)
+    VAR ValueCurrentPeriod = Local.TimeIntel.CY(baseMeasure)
+    VAR ValuePreviousPeriod = Local.TimeIntel.PY(baseMeasure)
     VAR Result =
 	                IF(
 		                NOT ISBLANK( ValueCurrentPeriod )
@@ -137,11 +138,11 @@ YOYfunction.SetAnnotation("outputType", "Measure");
 YOYfunction.SetAnnotation("nameTemplate", "baseMeasureName YOY");
 YOYfunction.SetAnnotation("outputDestination", "baseMeasureTable");
 //YOY%
-string YOYPfunctionName = "Model.TimeIntel.YOYPCT";
+string YOYPfunctionName = "Local.TimeIntel.YOYPCT";
 string YOYPfunctionExpression =
     @"(baseMeasure: ANYREF) =>
-    VAR ValueCurrentPeriod = Model.TimeIntel.CY(baseMeasure)
-    VAR ValuePreviousPeriod = Model.TimeIntel.PY(baseMeasure)
+    VAR ValueCurrentPeriod = Local.TimeIntel.CY(baseMeasure)
+    VAR ValuePreviousPeriod = Local.TimeIntel.PY(baseMeasure)
     VAR CurrentMinusPreviousPeriod =
 	                IF(
 		                NOT ISBLANK( ValueCurrentPeriod )
