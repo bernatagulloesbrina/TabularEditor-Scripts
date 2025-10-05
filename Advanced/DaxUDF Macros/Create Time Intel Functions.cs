@@ -1,4 +1,4 @@
-#r "Microsoft.VisualBasic
+#r "Microsoft.VisualBasic"
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
