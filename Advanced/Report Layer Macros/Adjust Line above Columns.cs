@@ -11,6 +11,7 @@ using Newtonsoft.Json.Linq;
 // It modifies the visual to use these calculations for the axis min/max values.
 // It is recommended to create a backup of the model before running this script as it modifies both the model and the report.
 // The script only works with "lineClusteredColumnComboChart" visuals.
+// see https://www.esbrina-ba.com/industrializing-chart-modifications-with-visual-calcs-dax-udfs-and-c-scripts/
 
 // Check model compatibility level
 Fx.CheckCompatibilityVersion(Model, 1702, "Time Intelligence functions are only supported in 1702 or higher.Do you want to change the compatibility level to 1702?");
