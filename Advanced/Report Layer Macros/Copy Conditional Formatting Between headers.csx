@@ -6,7 +6,7 @@ using System.Windows.Forms;
 using Microsoft.VisualBasic;
 using System.IO;
 using Newtonsoft.Json.Linq;
-// 2024-06-10 / B.Agullo
+// 2025-10-22 / B.Agullo
 // Copies conditional formatting from one header to multiple other headers in a table visual.
 
 #if TE3
