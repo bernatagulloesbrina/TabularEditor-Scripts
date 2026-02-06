@@ -7,6 +7,9 @@ using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
 using System.Text.RegularExpressions;
+#if TE3
+ScriptHelper.WaitFormVisible = false;
+#endif
 // PSEUDOCODE / PLAN:
 // 1. Verify that the user has selected one or more functions (Selected.Functions).
 // 2. If none selected, show error and abort.
@@ -157,7 +160,8 @@ foreach (var func in selectedFunctions)
                 }
                 if (paramFormatStringFull.Contains(";"))
                 {
-                    paramFormatStringRoot = paramFormatStringFull.Split(';')[0];
+                    //keep the first part of the format string, strip it of any + sign
+                    paramFormatStringRoot = paramFormatStringFull.Split(';')[0].Replace("+","");
                 }
                 else
                 {
@@ -195,7 +199,7 @@ foreach (var func in selectedFunctions)
                 .FirstOrDefault();
             if (destinationTable == null)
             {
-                destinationTable = SelectTable(label: "Select destinatoin table for " + func.OutputType + " " + currentListNames[i]);
+                destinationTable = SelectTable(preselect: null, label: $"Select destinatoin table for {func.OutputType} {currentListNames[i]}");
                 if (destinationTable == null) return;
             }
             currentDestinationTables.Add(destinationTable);
@@ -235,16 +239,280 @@ foreach (var func in selectedFunctions)
 
 public static class Fx
 {
-    public static Table CreateCalcTable(Model model, string tableName, string tableExpression)
+    public static Measure GetSelectedMeasure(IEnumerable<Measure> measures, string label = "Select Measure")
+    {
+        Measure selectedMeasure = null;
+        if (measures.Count() == 1)
+        {
+            selectedMeasure = measures.First();
+        }
+        else
+        {
+            selectedMeasure = SelectMeasure(preselect: null, label: label);
+            if (selectedMeasure == null)
+            {
+                Info("No measure selected.");
+                return null;
+            }
+        }
+        return selectedMeasure;
+    }
+    public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
+    {
+        if (!model.Tables.OfType<CalculationGroupTable>().Any())
+        {
+            Info("No calculation groups found in the model.");
+            return null;
+        }
+        // Create a TreeView form
+        Form form = new Form
+        {
+            Text = label,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 600,
+            Height = 500,
+            Padding = new Padding(10)
+        };
+        TreeView treeView = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            CheckBoxes = true
+        };
+        // Track selections per calculation group
+        var selectionMap = new Dictionary<string, TreeNode>();
+        // Populate tree with calculation groups and items
+        foreach (var calcGroup in model.Tables.OfType<CalculationGroupTable>())
+        {
+            TreeNode groupNode = new TreeNode(calcGroup.Name)
+            {
+                Tag = calcGroup
+            };
+            foreach (var calcItem in calcGroup.CalculationItems)
+            {
+                TreeNode itemNode = new TreeNode(calcItem.Name)
+                {
+                    Tag = calcItem
+                };
+                groupNode.Nodes.Add(itemNode);
+            }
+            treeView.Nodes.Add(groupNode);
+            groupNode.Expand();
+        }
+        // Handle BeforeCheck to prevent checking group nodes
+        treeView.BeforeCheck += (sender, e) =>
+        {
+            // Prevent checking calculation group nodes (only allow calculation items)
+            if (e.Node.Tag is CalculationGroupTable)
+            {
+                e.Cancel = true;
+            }
+        };
+        // Handle node check events to enforce "one per group" rule
+        treeView.AfterCheck += (sender, e) =>
+        {
+            if (e.Node.Tag is CalculationItem)
+            {
+                var calcItem = (CalculationItem)e.Node.Tag;
+                string groupName = calcItem.CalculationGroupTable.Name;
+                if (e.Node.Checked)
+                {
+                    // Uncheck any previously selected item in this group
+                    if (selectionMap.ContainsKey(groupName))
+                    {
+                        selectionMap[groupName].Checked = false;
+                    }
+                    selectionMap[groupName] = e.Node;
+                }
+                else
+                {
+                    // Remove from selection if unchecked
+                    if (selectionMap.ContainsKey(groupName) && selectionMap[groupName] == e.Node)
+                    {
+                        selectionMap.Remove(groupName);
+                    }
+                }
+            }
+        };
+        // Button panel
+        FlowLayoutPanel buttonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(5)
+        };
+        Button okButton = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Width = 80,
+            Height = 30
+        };
+        Button cancelButton = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Width = 80,
+            Height = 30
+        };
+        buttonPanel.Controls.Add(okButton);
+        buttonPanel.Controls.Add(cancelButton);
+        form.Controls.Add(treeView);
+        form.Controls.Add(buttonPanel);
+        // Show dialog
+        DialogResult result = form.ShowDialog();
+        if (result == DialogResult.Cancel)
+        {
+            Info("Selection cancelled.");
+            return null;
+        }
+        // Build result dictionary: CalculationGroupName -> CalculationItemName
+        var selectedItems = new Dictionary<string, string>();
+        foreach (var kvp in selectionMap)
+        {
+            if (kvp.Value.Checked)
+            {
+                selectedItems[kvp.Key] = kvp.Value.Text;
+            }
+        }
+        return selectedItems;
+    }
+    public static void CheckCompatibilityVersion(Model model, int requiredVersion, string customMessage = "Compatibility level must be raised to {0} to run this script. Do you want raise the compatibility level?")
+    {
+        if (model.Database.CompatibilityLevel < requiredVersion)
+        {
+            if (Fx.IsAnswerYes(String.Format("The model compatibility level is below {0}. " + customMessage, requiredVersion)))
+            {
+                model.Database.CompatibilityLevel = requiredVersion;
+            }
+            else
+            {
+                Info("Operation cancelled.");
+                return;
+            }
+        }
+    }
+    public static Function CreateFunction(
+        Model model,
+        string name,
+        string expression,
+        out bool functionCreated,
+        string description = null,
+        string annotationLabel = null,
+        string annotationValue = null,
+        string outputType = null,
+        string nameTemplate = null,
+        string formatString = null,
+        string displayFolder = null,
+        string outputDestination = null)
+    {
+        Function function = null as Function;
+        functionCreated = false;
+        var matchingFunctions = model.Functions.Where(f => f.GetAnnotation(annotationLabel) == annotationValue);
+        if (matchingFunctions.Count() == 1)
+        {
+            return matchingFunctions.First();
+        }
+        else if (matchingFunctions.Count() == 0)
+        {
+            function = model.AddFunction(name);
+            function.Expression = expression;
+            function.Description = description;
+            functionCreated = true;
+        }
+        else
+        {
+            Error("More than one function found with annoation " + annotationLabel + " value " + annotationValue);
+            return null as Function;
+        }
+        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+        {
+            function.SetAnnotation(annotationLabel, annotationValue);
+        }
+        if (!string.IsNullOrEmpty(outputType))
+        {
+            function.SetAnnotation("outputType", outputType);
+        }
+        if (!string.IsNullOrEmpty(nameTemplate))
+        {
+            function.SetAnnotation("nameTemplate", nameTemplate);
+        }
+        if (!string.IsNullOrEmpty(formatString))
+        {
+            function.SetAnnotation("formatString", formatString);
+        }
+        if (!string.IsNullOrEmpty(displayFolder))
+        {
+            function.SetAnnotation("displayFolder", displayFolder);
+        }
+        if (!string.IsNullOrEmpty(outputDestination))
+        {
+            function.SetAnnotation("outputDestination", outputDestination);
+        }
+        return function;
+    }
+    public static Table CreateCalcTable(Model model, string tableName, string tableExpression = "FILTER({0},FALSE)")
     {
         return model.Tables.FirstOrDefault(t =>
                             string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase)) //case insensitive search
                             ?? model.AddCalculatedTable(tableName, tableExpression);
     }
+    public static Measure CreateMeasure(
+        Table table, 
+        string measureName, 
+        string measureExpression,
+        out bool measureCreated,
+        string formatString = null,
+        string displayFolder = null,
+        string description = null,
+        string annotationLabel = null, 
+        string annotationValue = null,
+        bool isHidden = false)
+    {
+        measureCreated = false;
+        IEnumerable<Measure> matchingMeasures = null as IEnumerable<Measure>;
+        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+        {
+            matchingMeasures = table.Measures.Where(m => m.GetAnnotation(annotationLabel) == annotationValue);
+        }
+        else
+        {
+            matchingMeasures = table.Measures.Where(m => m.Name == measureName);
+        }
+        if (matchingMeasures.Count() == 1)
+        {
+            return matchingMeasures.First();
+        }
+        else if (matchingMeasures.Count() == 0)
+        {
+            Measure measure = table.AddMeasure(measureName, measureExpression);
+            measure.Description = description;
+            measure.DisplayFolder = displayFolder;
+            measure.FormatString = formatString;
+            measureCreated = true;
+            if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+            {
+                measure.SetAnnotation(annotationLabel, annotationValue);
+            }
+            measure.IsHidden = isHidden;
+            return measure;
+        }
+        else
+        {
+            Error("More than one measure found with annoation " + annotationLabel + " value " + annotationValue);
+            Output(matchingMeasures);
+            return null as Measure;
+        }
+    }
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
         return response;
+    }
+    public static bool IsAnswerYes(string question, string title = "Please confirm")
+    {
+        var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        return result == DialogResult.Yes;
     }
     public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "")
     {
@@ -367,6 +635,116 @@ public static class Fx
         }
         return dateTables;
     }
+    public static Table GetDateTable(Model model, string prompt = "Select Date Table")
+    {
+        var dateTables = GetDateTables(model);
+        if (dateTables == null) {
+            Table t = SelectTable(model.Tables, label: prompt);
+            if(t == null)
+            {
+                Error("No table selected");
+                return null;
+            }
+            if (IsAnswerYes(String.Format("Mark {0} as date table?",t.DaxObjectFullName)))
+            {
+                t.DataCategory = "Time";
+                var dateColumns = t.Columns
+                    .Where(c => c.DataType == DataType.DateTime)
+                    .ToList();
+                if(dateColumns.Count == 0)
+                {
+                    Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column",t.Name));
+                    return null;
+                }
+                var keyColumn = SelectColumn(dateColumns, preselect:dateColumns.First(), label: "Select Date Column to be used as key column");
+                if(keyColumn == null)
+                {
+                    Error("No key column selected");
+                    return null;
+                }
+                keyColumn.IsKey = true;
+            }
+            return t;
+        };
+        if (dateTables.Count() == 1)
+            return dateTables.First();
+        Table dateTable = SelectTable(dateTables, label: prompt);
+        if(dateTable == null)
+        {
+            Error("No table selected");
+            return null;
+        }
+        return dateTable;
+    }
+    public static Column GetDateColumn(Table dateTable, string prompt = "Select Date Column")
+    {
+        var dateColumns = dateTable.Columns
+            .Where(c => c.DataType == DataType.DateTime)
+            .ToList();
+        if(dateColumns.Count == 0)
+        {
+            Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column", dateTable.Name));
+            return null;
+        }
+        if(dateColumns.Any(c => c.IsKey))
+        {
+            return dateColumns.First(c => c.IsKey);
+        }
+        Column dateColumn = null;
+        if (dateColumns.Count() == 1)
+        {
+            dateColumn = dateColumns.First();
+        }
+        else
+        {
+            dateColumn = SelectColumn(dateColumns, label: prompt);
+            if (dateColumn == null)
+            {
+                Error("No column selected");
+                return null;
+            }
+        }
+        return dateColumn;
+    }
+    public static IEnumerable<Table> GetFactTables(Model model)
+    {
+        IEnumerable<Table> factTables = model.Tables.Where(
+            x => model.Relationships.Where(r => r.ToTable == x)
+                    .All(r => r.ToCardinality == RelationshipEndCardinality.Many)
+                && model.Relationships.Where(r => r.FromTable == x)
+                    .All(r => r.FromCardinality == RelationshipEndCardinality.Many)
+                && model.Relationships.Where(r => r.ToTable == x || r.FromTable == x).Any()); // at least one relationship
+        if (!factTables.Any())
+        {
+            Error("No fact table detected in the model. Please check that the model contains relationships");
+            return null;
+        }
+        return factTables;
+    }
+    public static Table GetFactTable(Model model, string prompt = "Select Fact Table")
+    {
+        Table factTable = null;
+        var factTables = GetFactTables(model);
+        if (factTables == null)
+        {
+           factTable = SelectTable(model.Tables, label: "This does not look like a star schema. Choose your fact table manually");
+            if (factTable == null)
+            {
+                Error("No table selected");
+                return null;
+            }
+            return factTable;
+        };
+        if (factTables.Count() == 1)
+            return factTables.First();
+        factTable = SelectTable(factTables, label: prompt);
+        if (factTable == null)
+        {
+            Error("No table selected");
+            return null;
+        }
+        return factTable;
+    }
     public static Table GetTablesWithAnnotation(IEnumerable<Table> tables, string annotationLabel, string annotationValue)
     {
         Func<Table, bool> lambda = t => t.GetAnnotation(annotationLabel) == annotationValue;
@@ -386,7 +764,7 @@ public static class Fx
     public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
     {
         measures ??= model.AllMeasures;
-        IList<string> measureNames = measures.Select(m => m.DaxObjectFullName).ToList();
+        IList<string> measureNames = measures.Select(m => m.DaxObjectFullName).OrderBy(t=>t).ToList();
         IList<string> selectedMeasureNames = ChooseStringMultiple(measureNames, label: label);
         return selectedMeasureNames; 
     }
@@ -444,7 +822,7 @@ public static class Fx
                 //var parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
                 var fp = new FunctionParameter();
-                fp.Name = nameParams.Length > 0 ? nameParams[0] : param;
+                fp.Name = nameParams.Length > 0 ? nameParams[0].Trim() : param.Trim();
                 fp.Type =
                     (nameParams.Length == 1) ? "ANYVAL" :
                     (nameParams.Length > 1) ?
@@ -476,7 +854,10 @@ public static class Fx
                     paramMode = "VAL";
                 else if (trimmed.IndexOf("EXPR", StringComparison.OrdinalIgnoreCase) >= 0)
                     paramMode = "EXPR";
-                else
+                else if (fp.Type == "ANYREF")
+                {
+                    paramMode = "EXPR";
+                }else
                     paramMode = "VAL";
                 fp.ParameterMode = paramMode;
 
@@ -485,7 +866,10 @@ public static class Fx
 
             return paramList;
         }
-        public static FunctionExtended CreateFunctionExtended(Function function)
+
+        
+
+        public static FunctionExtended CreateFunctionExtended(Function function, bool completeMetadata = true)
         {
 
             FunctionExtended emptyFunction = null as FunctionExtended;
@@ -554,62 +938,64 @@ public static class Fx
             string myDisplayFolder = function.GetAnnotation("displayFolder");
             string myOutputDestination = function.GetAnnotation("outputDestination");
 
-            if (string.IsNullOrEmpty(myOutputType))
+            if (completeMetadata)
             {
-                IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "None" };
-                myOutputType = 
-                    Fx.ChooseString(
-                        OptionList: selectionTypeOptions, 
-                        label: "Choose output type for function" + function.Name, 
-                        customWidth: 600);
-                if (string.IsNullOrEmpty(myOutputType)) return emptyFunction;
-                function.SetAnnotation("outputType", myOutputType);
-            }
-
-            if (string.IsNullOrEmpty(myNameTemplate))
-            {
-                myNameTemplate = Fx.GetNameFromUser(Prompt:"Enter output name template for function " + function.Name,  "Name Template", nameTemplateDefault);
-                if (string.IsNullOrEmpty(myNameTemplate)) return emptyFunction;
-                function.SetAnnotation("nameTemplate", myNameTemplate);
-            }
-            if(string.IsNullOrEmpty(myFormatString))
-            {
-                myFormatString = Fx.GetNameFromUser(Prompt: "Enter output format string for function " + function.Name, "Format String", formatStringDefault);
-                if (string.IsNullOrEmpty(myFormatString)) return emptyFunction;
-                function.SetAnnotation("formatString", myFormatString);
-
-            }
-            if(string.IsNullOrEmpty(myDisplayFolder))
-            {
-                myDisplayFolder = 
-                    Fx.GetNameFromUser(
-                        Prompt: "Enter output display folder for function " + function.Name, 
-                        Title:"Display Folder", 
-                        DefaultResponse: displayFolderDefault);
-
-                if (string.IsNullOrEmpty(myDisplayFolder)) return emptyFunction;
-                function.SetAnnotation("displayFolder", myDisplayFolder);
-            }
-
-            if (string.IsNullOrEmpty(myOutputDestination))
-            {
-                if(myOutputType ==  "Table")
+                if (string.IsNullOrEmpty(myOutputType))
                 {
-                    myOutputDestination = "Model";
+                    IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "None" };
+                    myOutputType =
+                        Fx.ChooseString(
+                            OptionList: selectionTypeOptions,
+                            label: "Choose output type for function" + function.Name,
+                            customWidth: 600);
+                    if (string.IsNullOrEmpty(myOutputType)) return emptyFunction;
+                    function.SetAnnotation("outputType", myOutputType);
                 }
-                else if(myOutputType == "Column" ||  myOutputType == "Measure")
+
+                if (string.IsNullOrEmpty(myNameTemplate))
                 {
-                    myOutputDestination = 
+                    myNameTemplate = Fx.GetNameFromUser(Prompt: "Enter output name template for function " + function.Name, "Name Template", nameTemplateDefault);
+                    if (string.IsNullOrEmpty(myNameTemplate)) return emptyFunction;
+                    function.SetAnnotation("nameTemplate", myNameTemplate);
+                }
+                if (string.IsNullOrEmpty(myFormatString))
+                {
+                    myFormatString = Fx.GetNameFromUser(Prompt: "Enter output format string for function " + function.Name, "Format String", formatStringDefault);
+                    if (string.IsNullOrEmpty(myFormatString)) return emptyFunction;
+                    function.SetAnnotation("formatString", myFormatString);
+
+                }
+                if (string.IsNullOrEmpty(myDisplayFolder))
+                {
+                    myDisplayFolder =
                         Fx.GetNameFromUser(
-                            Prompt: "Enter Destination template for " + function.Name, 
-                            Title:"Destination", 
-                            DefaultResponse: destinationDefault);
+                            Prompt: "Enter output display folder for function " + function.Name,
+                            Title: "Display Folder",
+                            DefaultResponse: displayFolderDefault);
 
-                    if(string.IsNullOrEmpty(myOutputDestination)) return emptyFunction;
-                    function.SetAnnotation("outputDestination", destinationDefault);
+                    if (string.IsNullOrEmpty(myDisplayFolder)) return emptyFunction;
+                    function.SetAnnotation("displayFolder", myDisplayFolder);
+                }
+
+                if (string.IsNullOrEmpty(myOutputDestination))
+                {
+                    if (myOutputType == "Table")
+                    {
+                        myOutputDestination = "Model";
+                    }
+                    else if (myOutputType == "Column" || myOutputType == "Measure")
+                    {
+                        myOutputDestination =
+                            Fx.GetNameFromUser(
+                                Prompt: "Enter Destination template for " + function.Name,
+                                Title: "Destination",
+                                DefaultResponse: destinationDefault);
+
+                        if (string.IsNullOrEmpty(myOutputDestination)) return emptyFunction;
+                        function.SetAnnotation("outputDestination", destinationDefault);
+                    }
                 }
             }
-
 
             var functionExtended = new FunctionExtended
             {
