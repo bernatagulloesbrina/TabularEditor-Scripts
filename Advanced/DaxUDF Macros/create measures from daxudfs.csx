@@ -68,18 +68,14 @@ foreach (var param in distinctParameters)
     {
         selectionType = "Table";
     }
-    (IList<string> Values,string Type) selectedObjectsForParam = Fx.SelectAnyObjects(
+    (IList<string> Values, string Type) selectedObjectsForParam = Fx.SelectAnyObjects(
         Model,
         selectionType: selectionType,
         prompt1: String.Format(@"Select object type for {0} parameter", param.Name),
         prompt2: String.Format(@"Select item for {0} parameter", param.Name),
         placeholderValue: param.Name
     );
-    if (selectedObjectsForParam.Type == null || selectedObjectsForParam.Values.Count == 0)
-    {
-        Info(String.Format("No objects selected for parameter '{0}'. Operation cancelled.", param.Name));
-        return;
-    }
+    if (selectedObjectsForParam.Values == null || selectedObjectsForParam.Type == null) return; //user cancelled
     parameterObjectsMap[param.Name] = selectedObjectsForParam;
 }
 foreach (var func in selectedFunctions)
@@ -95,6 +91,8 @@ foreach (var func in selectedFunctions)
     IList<string> currentDisplayFolders = new List<string>();
     IList<string> previousFormatStrings = new List<string>() { func.OutputFormatString };
     IList<string> currentFormatStrings = new List<string>();
+    IList<string> previousOutputProperties = new List<string>() { func.OutputProperties };
+    IList<string> currentOutputProperties = new List<string>();
     // When iterating the parameters of this specific function, use the mapping created for distinct parameters.
     foreach (var param in func.Parameters)
     {
@@ -103,6 +101,7 @@ foreach (var func in selectedFunctions)
         currentFormatStrings = new List<string>();
         currentDestinations = new List<string>();
         currentDisplayFolders = new List<string>();
+        currentOutputProperties = new List<string>();
         // Retrieve the objects list for this parameter name from the map (prompting was done earlier)
         (IList<string> Values, string Type) paramObject;
         if (!parameterObjectsMap.TryGetValue(param.Name, out paramObject) || paramObject.Type == null || paramObject.Values.Count == 0)
@@ -117,6 +116,7 @@ foreach (var func in selectedFunctions)
             string sFormatString = previousFormatStrings[i];
             string sDisplayFolder = previousDisplayFolders[i];
             string sDestination = previousDestinations[i];
+            string sOutputProperties = previousOutputProperties[i];
             foreach (var o in paramObject.Values)
             {
                 //extract original name and format string if the parameter is a measure
@@ -125,11 +125,13 @@ foreach (var func in selectedFunctions)
                 string paramFormatStringRoot = "";
                 string paramDisplayFolder = "";
                 string paramTable = "";
+                string paramProperties = "";
                 //prepare placeholder
                 string paramNamePlaceholder = param.Name + "Name";
                 string paramFormatStringRootPlaceholder = param.Name + "FormatStringRoot";
                 string paramFormatStringFullPlaceholder = param.Name + "FormatStringFull";
                 string paramDisplayFolderPlaceholder = param.Name + "DisplayFolder";
+                string paramPropertiesPlaceholder = param.Name + "Properties";
                 string paramTablePlaceholder = "";
                 if (paramObject.Type == "Measure")
                 {
@@ -138,6 +140,7 @@ foreach (var func in selectedFunctions)
                     paramFormatStringFull = m.FormatString;
                     paramDisplayFolder = m.DisplayFolder;
                     paramTable = m.Table.DaxObjectFullName;
+                    paramProperties = m.GetAnnotation("Properties") ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Column")
@@ -147,6 +150,7 @@ foreach (var func in selectedFunctions)
                     paramFormatStringFull = c.FormatString;
                     paramDisplayFolder = c.DisplayFolder;
                     paramTable = c.Table.DaxObjectFullName;
+                    paramProperties = c.GetAnnotation("Properties") ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Table")
@@ -156,12 +160,13 @@ foreach (var func in selectedFunctions)
                     paramFormatStringFull = "";
                     paramDisplayFolder = "";
                     paramTable = t.DaxObjectFullName;
+                    paramProperties = t.GetAnnotation("Properties") ?? "";
                     paramTablePlaceholder = param.Name;
                 }
                 if (paramFormatStringFull.Contains(";"))
                 {
                     //keep the first part of the format string, strip it of any + sign
-                    paramFormatStringRoot = paramFormatStringFull.Split(';')[0].Replace("+","");
+                    paramFormatStringRoot = paramFormatStringFull.Split(';')[0].Replace("+", "");
                 }
                 else
                 {
@@ -179,6 +184,10 @@ foreach (var func in selectedFunctions)
                         .Replace(paramDisplayFolderPlaceholder, paramDisplayFolder));
                 currentDestinations.Add(
                     sDestination.Replace(paramTablePlaceholder, paramTable));
+                currentOutputProperties.Add(
+                    sOutputProperties
+                        .Replace(paramNamePlaceholder, paramName)
+                        .Replace(paramPropertiesPlaceholder, paramProperties));
             }
         }
         delimiter = ", ";
@@ -187,9 +196,10 @@ foreach (var func in selectedFunctions)
         previousDestinations = currentDestinations;
         previousDisplayFolders = currentDisplayFolders;
         previousFormatStrings = currentFormatStrings;
+        previousOutputProperties = currentOutputProperties;
     }
     IList<Table> currentDestinationTables = new List<Table>();
-    if(func.OutputType == "Measure" || func.OutputType == "Column")
+    if (func.OutputType == "Measure" || func.OutputType == "Column")
     {
         for (int i = 0; i < currentDestinations.Count; i++)
         {
@@ -216,9 +226,14 @@ foreach (var func in selectedFunctions)
             measure.Description = String.Format("Measure created with {0} function. Check function for details.", func.Name);
             measure.DisplayFolder = cleanCurrentDisplayFolder;
             measure.FormatString = currentFormatStrings[i];
+            // Set Properties annotation with the transformed outputProperties value
+            if (!string.IsNullOrEmpty(currentOutputProperties[i]))
+            {
+                measure.SetAnnotation("Properties", currentOutputProperties[i]);
+            }
         }
     }
-    else if (func.OutputType == "Column") 
+    else if (func.OutputType == "Column")
     {
         for (int i = 0; i < currentList.Count; i++)
         {
@@ -229,6 +244,11 @@ foreach (var func in selectedFunctions)
             column.Description = String.Format("Column created with {0} function. Check function for details.", func.Name);
             column.DisplayFolder = cleanCurrentDisplayFolder;
             column.FormatString = currentFormatStrings[i];
+            // Set Properties annotation with the transformed outputProperties value
+            if (!string.IsNullOrEmpty(currentOutputProperties[i]))
+            {
+                column.SetAnnotation("Properties", currentOutputProperties[i]);
+            }
         }
     }
     else
@@ -548,7 +568,7 @@ public static class Fx
                 Error("Invalid selection type");
                 return returnEmpty;
         }
-        if (selectedValues.Count == 0) return returnEmpty; 
+        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty; 
         return (Values:selectedValues, Type:selectionType);
     }
     public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
@@ -567,20 +587,101 @@ public static class Fx
             StartPosition = FormStartPosition.CenterScreen,
             Padding = new Padding(20)
         };
+        // Keep track of selected items across filtering
+        HashSet<string> selectedItemsSet = new HashSet<string>();
+        bool isRestoringSelections = false;
+        // Search panel at the top
+        Panel searchPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 35,
+            Padding = new Padding(0, 0, 0, 5)  // Add 5px bottom padding for spacing
+        };
+        Label searchLabel = new System.Windows.Forms.Label
+        {
+            Text = "Search:",
+            AutoSize = true,
+            Location = new System.Drawing.Point(0, 6)
+        };
+        TextBox searchBox = new TextBox
+        {
+            Location = new System.Drawing.Point(60, 3),
+            Width = customWidth - 120,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right
+        };
+        searchPanel.Controls.Add(searchLabel);
+        searchPanel.Controls.Add(searchBox);
+        // ListBox panel in the middle
+        Panel listBoxPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 35, 0, 75)  // Top padding = searchPanel height, Bottom = buttonPanel height
+        };
         ListBox listbox = new ListBox
         {
             Dock = DockStyle.Fill,
             SelectionMode = MultiSelect ? SelectionMode.MultiExtended : SelectionMode.One
         };
+        listBoxPanel.Controls.Add(listbox);
+        // Initial population
         listbox.Items.AddRange(OptionList.ToArray());
         if (!MultiSelect && OptionList.Count > 0)
             listbox.SelectedItem = OptionList[0];
+        // Track manual selection changes
+        listbox.SelectedIndexChanged += delegate
+        {
+            // Skip if we're programmatically restoring selections
+            if (isRestoringSelections) return;
+            // Get current items in listbox
+            HashSet<string> currentItems = new HashSet<string>();
+            foreach (object item in listbox.Items)
+            {
+                currentItems.Add(item.ToString());
+            }
+            // Remove only currently visible items that are NOT selected
+            foreach (string item in currentItems)
+            {
+                if (!listbox.SelectedItems.Cast<object>().Any(selected => selected.ToString() == item))
+                {
+                    selectedItemsSet.Remove(item);
+                }
+            }
+            // Add currently selected items
+            foreach (object item in listbox.SelectedItems)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
+        };
+        // Search/filter functionality
+        searchBox.TextChanged += delegate
+        {
+            string searchText = searchBox.Text;
+            // Filter the list
+            var filteredList = OptionList
+                .Where(item => item.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            // Set flag to prevent SelectedIndexChanged from firing during restoration
+            isRestoringSelections = true;
+            // Repopulate listbox
+            listbox.Items.Clear();
+            listbox.Items.AddRange(filteredList.ToArray());
+            // Restore previous selections
+            for (int i = 0; i < listbox.Items.Count; i++)
+            {
+                if (selectedItemsSet.Contains(listbox.Items[i].ToString()))
+                {
+                    listbox.SetSelected(i, true);
+                }
+            }
+            // Re-enable selection tracking
+            isRestoringSelections = false;
+        };
         FlowLayoutPanel buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 70,
+            Height = 75,
             FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(10)
+            Padding = new Padding(10, 5, 10, 10)  // Add top padding for spacing from listbox
         };
         Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect , Height = 50, Width = 150};
         Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect, Height = 50, Width = 150 };
@@ -590,18 +691,30 @@ public static class Fx
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, true);
+            // Update tracking set with all currently visible items
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
         };
         selectNoneButton.Click += delegate
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, false);
+            // Remove all currently visible items from tracking set
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Remove(item.ToString());
+            }
         };
         buttonPanel.Controls.Add(selectAllButton);
         buttonPanel.Controls.Add(selectNoneButton);
         buttonPanel.Controls.Add(okButton);
         buttonPanel.Controls.Add(cancelButton);
-        form.Controls.Add(listbox);
-        form.Controls.Add(buttonPanel);
+        // Add controls in proper order for Dock: Bottom first, Top second, Fill last
+        form.Controls.Add(buttonPanel);    // Bottom - add first
+        form.Controls.Add(searchPanel);    // Top - add second
+        form.Controls.Add(listBoxPanel);   // Fill - add last
         form.Width = customWidth;
         form.Height = customHeight;
         DialogResult result = form.ShowDialog();
@@ -764,9 +877,32 @@ public static class Fx
     public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
     {
         measures ??= model.AllMeasures;
-        IList<string> measureNames = measures.Select(m => m.DaxObjectFullName).OrderBy(t=>t).ToList();
-        IList<string> selectedMeasureNames = ChooseStringMultiple(measureNames, label: label);
-        return selectedMeasureNames; 
+        // Create display strings with format: TableName\DisplayFolder\[MeasureName]
+        var measureDisplayMap = new Dictionary<string, string>();
+        var displayList = new List<string>();
+        foreach (var measure in measures.OrderBy(m => m.Table.Name).ThenBy(m => m.DisplayFolder).ThenBy(m => m.Name))
+        {
+            string displayString;
+            if (string.IsNullOrEmpty(measure.DisplayFolder))
+            {
+                displayString = String.Format("{0}\\[{1}]", measure.Table.Name, measure.Name);
+            }
+            else
+            {
+                displayString = String.Format("{0}\\{1}\\[{2}]", measure.Table.Name, measure.DisplayFolder, measure.Name);
+            }
+            measureDisplayMap[displayString] = measure.DaxObjectFullName;
+            displayList.Add(displayString);
+        }
+        // Show the display list to user
+        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label);
+        if (selectedDisplayStrings == null || selectedDisplayStrings.Count == 0)
+            return new List<string>();
+        // Map back to DaxObjectFullName
+        var selectedMeasureNames = selectedDisplayStrings
+            .Select(display => measureDisplayMap[display])
+            .ToList();
+        return selectedMeasureNames;
     }
     public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
     {
@@ -796,7 +932,8 @@ public static class Fx
         public string OutputType { get; set; }
         public string OutputDisplayFolder { get; set; }
 
-        public string OutputDestination { get; set; } 
+        public string OutputDestination { get; set; }
+        public string OutputProperties { get; set; }
         public Function OriginalFunction { get; set; }
         public List<FunctionParameter> Parameters { get; set; }
         private static List<FunctionParameter> ExtractParametersFromExpression(string expression)
@@ -886,11 +1023,14 @@ public static class Fx
                 functionNameShort = function.Name.Substring(function.Name.LastIndexOf(".") + 1);
             }
 
+            string outputPropertiesDefault = "";
+            
             if (Parameters.Count == 0) {
                 nameTemplateDefault = function.Name;
                 formatStringDefault = "";
                 displayFolderDefault = "";
                 destinationDefault = "";
+                outputPropertiesDefault = functionNameShort;
             }
             else
             {
@@ -926,6 +1066,7 @@ public static class Fx
                     destinationDefault = "Custom";
                 }
                 
+                outputPropertiesDefault = string.Join("|", Parameters.Select(p => p.Name + "Name")) + "|" + functionNameShort;
 
             };
             
@@ -937,6 +1078,7 @@ public static class Fx
             string myFormatString = function.GetAnnotation("formatString");
             string myDisplayFolder = function.GetAnnotation("displayFolder");
             string myOutputDestination = function.GetAnnotation("outputDestination");
+            string myOutputProperties = function.GetAnnotation("outputProperties");
 
             if (completeMetadata)
             {
@@ -995,6 +1137,18 @@ public static class Fx
                         function.SetAnnotation("outputDestination", destinationDefault);
                     }
                 }
+
+                if (string.IsNullOrEmpty(myOutputProperties))
+                {
+                    myOutputProperties =
+                        Fx.GetNameFromUser(
+                            Prompt: "Enter output properties template for " + function.Name,
+                            Title: "Output Properties",
+                            DefaultResponse: outputPropertiesDefault);
+
+                    if (string.IsNullOrEmpty(myOutputProperties)) return emptyFunction;
+                    function.SetAnnotation("outputProperties", myOutputProperties);
+                }
             }
 
             var functionExtended = new FunctionExtended
@@ -1008,6 +1162,7 @@ public static class Fx
                 OutputType = myOutputType,
                 OutputDisplayFolder = myDisplayFolder,
                 OutputDestination = myOutputDestination,
+                OutputProperties = myOutputProperties,
                 OriginalFunction = function
 
             };
