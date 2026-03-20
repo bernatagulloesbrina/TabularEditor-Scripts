@@ -26,24 +26,28 @@ if(column == null)
     return;
 }
 string measureNameTemplate = Fx.GetNameFromUser("Enter measure name template. You can use measureName, columnName, columnValue in the expression","template","measureName - columnValue");
+if (string.IsNullOrEmpty(measureNameTemplate)) return;
 string measureNameReplaceExpression = 
     measureNameTemplate
         .Replace("measureName", "{0}")
         .Replace("columnName", "{1}")
         .Replace("columnValue", "{2}");
 string measureDescriptionTemplate = Fx.GetNameFromUser("Enter measure description template. You can use measureName, columnName, columnValue in the expression","template","measureName filtered by columnName = columnValue");
+if(string.IsNullOrEmpty(measureDescriptionTemplate)) return;
 string measureDescriptionReplaceExpression = 
     measureDescriptionTemplate
         .Replace("measureName", "{0}")
         .Replace("columnName", "{1}")
         .Replace("columnValue", "{2}");
 string displayFolderTemplate = Fx.GetNameFromUser("Enter display folder template. You can use measureName, columnName, columnValue in the expression","template","measureName - columnName");
+if(string.IsNullOrEmpty(displayFolderTemplate)) return;
 string displayFolderReplaceExpression = 
     displayFolderTemplate
         .Replace("measureName", "{0}")
         .Replace("columnName", "{1}")
         .Replace("columnValue","{2}");
 string propertiesAnnotationTemplate = Fx.GetNameFromUser("Enter properties annotation template. You can use measureName, measureProperties, columnName, columnValue in the expression","template","measureName|columnValue");
+if(string.IsNullOrEmpty(propertiesAnnotationTemplate)) return;
 string propertiesAnnotationReplaceExpression = 
     propertiesAnnotationTemplate
         .Replace("measureName", "{0}")
@@ -406,6 +410,11 @@ public static class Fx
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")
