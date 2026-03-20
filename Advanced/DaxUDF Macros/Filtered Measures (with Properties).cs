@@ -37,11 +37,12 @@ string measureDescriptionReplaceExpression =
         .Replace("measureName", "{0}")
         .Replace("columnName", "{1}")
         .Replace("columnValue", "{2}");
-string displayFolderTemplate = Fx.GetNameFromUser("Enter display folder template. You can use measureName, columnName in the expression","template","measureName - columnName");
+string displayFolderTemplate = Fx.GetNameFromUser("Enter display folder template. You can use measureName, columnName, columnValue in the expression","template","measureName - columnName");
 string displayFolderReplaceExpression = 
     displayFolderTemplate
         .Replace("measureName", "{0}")
-        .Replace("columnName", "{1}");
+        .Replace("columnName", "{1}")
+        .Replace("columnValue","{2}");
 string propertiesAnnotationTemplate = Fx.GetNameFromUser("Enter properties annotation template. You can use measureName, measureProperties, columnName, columnValue in the expression","template","measureName|columnValue");
 string propertiesAnnotationReplaceExpression = 
     propertiesAnnotationTemplate
@@ -79,7 +80,8 @@ using (var reader = Model.Database.ExecuteReader(query))
             string displayFolderName =
                 string.Format(displayFolderReplaceExpression,
                     measure.Name,
-                    column.Name
+                    column.Name,
+                    columnValue
                 );
             string propertiesAnnotation =
                 string.Format(propertiesAnnotationReplaceExpression,
