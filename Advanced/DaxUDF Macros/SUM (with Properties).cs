@@ -16,6 +16,8 @@ foreach(var c in Selected.Columns)
     // Provide some documentation:
     newMeasure.Description = "This measure is the sum of column " + c.DaxObjectFullName;
     newMeasure.SetAnnotation("Properties","SUM|" + c.Name + "|" + c.Table.Name); 
+    newMeasure.SetAnnotation("PropertyNames","Aggregation|baseColumn|baseColumnTable"); 
+    
     // Hide the base column:
     c.IsHidden = true;
 }

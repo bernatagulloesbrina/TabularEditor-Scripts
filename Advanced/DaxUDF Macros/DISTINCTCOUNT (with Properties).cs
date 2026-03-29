@@ -16,6 +16,8 @@ foreach(var c in Selected.Columns)
     // Provide some documentation:
     newMeasure.Description = "This measure is the distinct count of column " + c.DaxObjectFullName;
     newMeasure.SetAnnotation("Properties","DISTINCTCOUNT|" + c.Name + "|" + c.Table.Name); 
-    // Hide the base column:
+    newMeasure.SetAnnotation("PropertyNames","Aggregation|baseColumn|baseColumnTable"); 
+    
+// Hide the base column:
     //c.IsHidden = true;
 }

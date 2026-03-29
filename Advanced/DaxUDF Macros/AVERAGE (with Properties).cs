@@ -17,6 +17,7 @@ foreach(var c in Selected.Columns)
     // Provide some documentation:
     newMeasure.Description = "This measure is the average of column " + c.DaxObjectFullName;
     newMeasure.SetAnnotation("Properties","AVERAGE|" + c.Name + "|" + c.Table.Name); 
-
+    newMeasure.SetAnnotation("PropertyNames","Aggregation|baseColumn|baseColumnTable"); 
+    
 
 }

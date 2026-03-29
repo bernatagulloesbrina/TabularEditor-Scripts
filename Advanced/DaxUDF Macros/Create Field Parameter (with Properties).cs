@@ -3,6 +3,7 @@ using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
 using Microsoft.VisualBasic;
+//2026-03-29 / B.Agullo / added support for propertyNames annotation
 //80% comes from Daniel Otykier --> https://github.com/TabularEditor/TabularEditor3/issues/541#issuecomment-1129228481
 //20% B.Agullo --> pop-up to choose parameter name + all the properties annotation support (split by pipe delimiter and added as additional columns in the field parameter table)
 // Before running the script, select the measures or columns that you
@@ -46,6 +47,82 @@ for (int i = 0; i < objectPropertiesLists.Count; i++)
         objectPropertiesLists[i].Add("");
     }
 }
+// Retrieve PropertyNames annotations from selected objects
+var propertyNamesAnnotations = new List<string>();
+foreach (var obj in objects)
+{
+    string propertyNamesAnnotation = "";
+    if (obj is Measure)
+    {
+        propertyNamesAnnotation = ((Measure)obj).GetAnnotation("PropertyNames") ?? "";
+    }
+    else if (obj is Column)
+    {
+        propertyNamesAnnotation = ((Column)obj).GetAnnotation("PropertyNames") ?? "";
+    }
+    if (!string.IsNullOrEmpty(propertyNamesAnnotation))
+    {
+        propertyNamesAnnotations.Add(propertyNamesAnnotation);
+    }
+}
+// Determine property names for field parameter columns
+List<string> propertyNames = new List<string>();
+if (propertyNamesAnnotations.Count > 0)
+{
+    // Get distinct PropertyNames values
+    var distinctPropertyNames = propertyNamesAnnotations.Distinct().ToList();
+    if (distinctPropertyNames.Count == 1)
+    {
+        // All PropertyNames are the same, use them
+        propertyNames = distinctPropertyNames[0].Split('|').ToList();
+    }
+    else
+    {
+        // Different PropertyNames found, let user choose
+        var optionsWithDefine = distinctPropertyNames.ToList();
+        optionsWithDefine.Add("<Define now>");
+        string chosenPropertyNames = Fx.ChooseString(
+            OptionList: optionsWithDefine,
+            label: "Different PropertyNames found. Choose one or define new:"
+        );
+        if (string.IsNullOrEmpty(chosenPropertyNames)) return;
+        if (chosenPropertyNames == "<Define now>")
+        {
+            // Show input box with first PropertyNames as default
+            chosenPropertyNames = Fx.GetNameFromUser(
+                Prompt: "Enter property names (pipe-separated):",
+                Title: "Property Names",
+                DefaultResponse: distinctPropertyNames[0]
+            );
+            if (string.IsNullOrEmpty(chosenPropertyNames)) return;
+        }
+        propertyNames = chosenPropertyNames.Split('|').ToList();
+    }
+}
+else
+{
+    // No PropertyNames found, ask one by one
+    for (int i = 0; i < maxPropertiesCount; i++)
+    {
+        // Collect distinct values for this property position (up to 3)
+        var sampleValues = objectPropertiesLists
+            .Where(pl => pl.Count > i && !string.IsNullOrEmpty(pl[i]))
+            .Select(pl => pl[i])
+            .Distinct()
+            .Take(3)
+            .ToList();
+        string sampleText = sampleValues.Count > 0 
+            ? String.Format(" (found values: '{0}')", string.Join("', '", sampleValues))
+            : "";
+        string propertyName = Fx.GetNameFromUser(
+            Prompt: String.Format("Enter name for property {0}{1}:", i + 1, sampleText),
+            Title: "Property Name",
+            DefaultResponse: String.Format("Property{0}", i + 1)
+        );
+        if (string.IsNullOrEmpty(propertyName)) return;
+        propertyNames.Add(propertyName);
+    }
+}
 // Construct the DAX for the calculated table based on the current selection:
 string dax = "";
 if (maxPropertiesCount > 0)
@@ -77,7 +154,7 @@ var propertyColumns = new List<CalculatedTableColumn>();
 for (int i = 0; i < maxPropertiesCount; i++)
 {
     int valueIndex = 4 + i; // Value4, Value5, etc.
-    string columnName = name + " Property" + (i + 1);
+    string columnName = propertyNames.Count > i ? propertyNames[i] : String.Format("Property{0}", i + 1);
     var propColumn = te2 
         ? table.AddCalculatedTableColumn(columnName, "[Value" + valueIndex + "]") 
         : table.Columns["Value" + valueIndex] as CalculatedTableColumn;
@@ -118,7 +195,7 @@ public static class Fx
         }
         else
         {
-            selectedMeasure = SelectMeasure(preselect: measures.First(), label: label);
+            selectedMeasure = SelectMeasure(label: label);
             if (selectedMeasure == null)
             {
                 Info("No measure selected.");
@@ -409,6 +486,11 @@ public static class Fx
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")

@@ -2,6 +2,7 @@
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
+// 2026-03-29 / B.Agullo / added support for propertyNames annotation
 // 2025-01-07 / B.Agullo
 // Creates a dynamic measure and disconnected tables based on Properties annotations of selected measures.
 // Each property position gets its own disconnected table with distinct values across all measures.
@@ -42,6 +43,73 @@ if (allPropertiesStrings.Count != allPropertiesStrings.Distinct().Count())
     Error("All Properties annotations must be unique. Some measures have duplicate Properties.");
     return;
 }
+// Step 3.5: Retrieve PropertyNames annotations from selected measures
+var propertyNamesAnnotations = new List<string>();
+foreach (var measure in Selected.Measures)
+{
+    string propertyNamesAnnotation = measure.GetAnnotation("PropertyNames") ?? "";
+    if (!string.IsNullOrEmpty(propertyNamesAnnotation))
+    {
+        propertyNamesAnnotations.Add(propertyNamesAnnotation);
+    }
+}
+// Determine property names for disconnected tables and variables
+List<string> propertyNames = new List<string>();
+if (propertyNamesAnnotations.Count > 0)
+{
+    // Get distinct PropertyNames values
+    var distinctPropertyNames = propertyNamesAnnotations.Distinct().ToList();
+    if (distinctPropertyNames.Count == 1)
+    {
+        // All PropertyNames are the same, use them
+        propertyNames = distinctPropertyNames[0].Split('|').ToList();
+    }
+    else
+    {
+        // Different PropertyNames found, let user choose
+        var optionsWithDefine = distinctPropertyNames.ToList();
+        optionsWithDefine.Add("<Define now>");
+        string chosenPropertyNames = Fx.ChooseString(
+            OptionList: optionsWithDefine,
+            label: "Different PropertyNames found. Choose one or define new:"
+        );
+        if (string.IsNullOrEmpty(chosenPropertyNames)) return;
+        if (chosenPropertyNames == "<Define now>")
+        {
+            // Show input box with first PropertyNames as default
+            chosenPropertyNames = Fx.GetNameFromUser(
+                Prompt: "Enter property names (pipe-separated):",
+                Title: "Property Names",
+                DefaultResponse: distinctPropertyNames[0]
+            );
+            if (string.IsNullOrEmpty(chosenPropertyNames)) return;
+        }
+        propertyNames = chosenPropertyNames.Split('|').ToList();
+    }
+}
+else
+{
+    // No PropertyNames found, ask one by one
+    for (int i = 0; i < propertyCount; i++)
+    {
+        // Collect distinct values for this property position (up to 3)
+        var sampleValues = measuresWithProperties
+            .Select(m => m.properties[i])
+            .Distinct()
+            .Take(3)
+            .ToList();
+        string sampleText = sampleValues.Count > 0 
+            ? String.Format(" (found values: '{0}')", string.Join("', '", sampleValues))
+            : "";
+        string propertyName = Fx.GetNameFromUser(
+            Prompt: String.Format("Enter name for property {0}{1}:", i + 1, sampleText),
+            Title: "Property Name",
+            DefaultResponse: String.Format("Property{0}", i + 1)
+        );
+        if (string.IsNullOrEmpty(propertyName)) return;
+        propertyNames.Add(propertyName);
+    }
+}
 // Step 4: Ask user for dynamic measure name
 string dynamicMeasureName = Fx.GetNameFromUser(
     Prompt: "Enter the name for the dynamic measure:",
@@ -61,8 +129,8 @@ for (int i = 0; i < propertyCount; i++)
         .Distinct()
         .OrderBy(v => v)
         .ToList();
-    // Create table name
-    string tableName = String.Format("Property{0}", i + 1);
+    // Create table name using PropertyNames if available, otherwise default
+    string tableName = propertyNames.Count > i ? propertyNames[i] : String.Format("Property{0}", i + 1);
     // Build DAX expression for calculated table
     string tableDax = "{" + Environment.NewLine;
     for (int j = 0; j < distinctValues.Count; j++)
@@ -115,9 +183,10 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
+            string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
             partialMeasureExpression += String.Format(
                 "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
-                propertyTables[i].Name,
+                varName,
                 propertyTables[i].Name
             );
         }
@@ -135,9 +204,10 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
+                    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
                     condition += String.Format(
                         "__{0} = \"{1}\"",
-                        propertyTables[i].Name,
+                        varName,
                         item.properties[i]
                     );
                     firstCondition = false;
@@ -169,9 +239,10 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
+            string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
             partialFormatExpression += String.Format(
                 "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
-                propertyTables[i].Name,
+                varName,
                 propertyTables[i].Name
             );
         }
@@ -189,9 +260,10 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
+                    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
                     condition += String.Format(
                         "__{0} = \"{1}\"",
-                        propertyTables[i].Name,
+                        varName,
                         item.properties[i]
                     );
                     firstCondition = false;
@@ -224,9 +296,10 @@ string measureExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
+    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
     measureExpression += String.Format(
         "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
-        propertyTables[i].Name,
+        varName,
         propertyTables[i].Name
     );
 }
@@ -240,9 +313,10 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
+        string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
         condition += String.Format(
             "__{0} = \"{1}\"",
-            propertyTables[i].Name,
+            varName,
             item.properties[i]
         );
     }
@@ -258,9 +332,10 @@ string formatExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
+    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
     formatExpression += String.Format(
         "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
-        propertyTables[i].Name,
+        varName,
         propertyTables[i].Name
     );
 }
@@ -274,9 +349,10 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
+        string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
         condition += String.Format(
             "__{0} = \"{1}\"",
-            propertyTables[i].Name,
+            varName,
             item.properties[i]
         );
     }
@@ -309,7 +385,7 @@ public static class Fx
         }
         else
         {
-            selectedMeasure = SelectMeasure(preselect: null, label: label);
+            selectedMeasure = SelectMeasure(label: label);
             if (selectedMeasure == null)
             {
                 Info("No measure selected.");
@@ -317,6 +393,38 @@ public static class Fx
             }
         }
         return selectedMeasure;
+    }
+    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
+    {
+        Table selectedTable = null;
+        if (tables.Count() == 1)
+        {
+            selectedTable = tables.First();
+        }
+        else if (tables.Count() > 1)
+        {
+            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
+            if (selectedTable == null)
+            {
+                Info("No table selected.");
+                return null;
+            }
+        } else             {
+            if (createMeasureTableIfNoneSelected)
+            {
+                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
+            } 
+            else
+            {
+                selectedTable = SelectTable(tables: tables, label: label);
+                if (selectedTable == null)
+                {
+                    Info("No table selected.");
+                    return null;
+                }
+            }
+        }
+        return selectedTable;
     }
     public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
     {
@@ -568,6 +676,11 @@ public static class Fx
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")

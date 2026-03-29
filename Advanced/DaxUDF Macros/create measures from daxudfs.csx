@@ -1,11 +1,13 @@
 #r "Microsoft.VisualBasic"
+using System.Windows.Forms;
+
+using Microsoft.VisualBasic;
+//2026-03-29 / B.Agullo / added support for propertyNames annotation
+//2026-02-15 / B.Agullo / improved default function annotation values and added support for output properties annotation.
 //2025-09-26/B.Agullo/ fixed bug that would not store annotations if initialized during runtime
 //2025-09-16/B.Agullo/
 //Creates measures based on DAX UDFs 
 //Check the blog post for futher information: https://www.esbrina-ba.com/automatically-create-measures-with-dax-user-defined-functions/
-using System.Windows.Forms;
-
-using Microsoft.VisualBasic;
 using System.Text.RegularExpressions;
 #if TE3
 ScriptHelper.WaitFormVisible = false;
@@ -40,6 +42,7 @@ foreach (var f in Selected.Functions)
 {
     // Create the FunctionExtended and add to list
     FunctionExtended fe = FunctionExtended.CreateFunctionExtended(f);
+    if (fe == null) return; 
     selectedFunctions.Add(fe);
 }
 // Flatten all parameters from selected functions
@@ -78,6 +81,8 @@ foreach (var param in distinctParameters)
     if (selectedObjectsForParam.Values == null || selectedObjectsForParam.Type == null) return; //user cancelled
     parameterObjectsMap[param.Name] = selectedObjectsForParam;
 }
+int totalMeasuresCreated = 0;
+int totalColumnsCreated = 0;
 foreach (var func in selectedFunctions)
 {
     string delimiter = "";
@@ -231,6 +236,12 @@ foreach (var func in selectedFunctions)
             {
                 measure.SetAnnotation("Properties", currentOutputProperties[i]);
             }
+            // Set PropertyNames annotation as-is from the function
+            if (!string.IsNullOrEmpty(func.OutputPropertyNames))
+            {
+                measure.SetAnnotation("PropertyNames", func.OutputPropertyNames);
+            }
+            totalMeasuresCreated++;
         }
     }
     else if (func.OutputType == "Column")
@@ -249,12 +260,32 @@ foreach (var func in selectedFunctions)
             {
                 column.SetAnnotation("Properties", currentOutputProperties[i]);
             }
+            // Set PropertyNames annotation as-is from the function
+            if (!string.IsNullOrEmpty(func.OutputPropertyNames))
+            {
+                column.SetAnnotation("PropertyNames", func.OutputPropertyNames);
+            }
         }
     }
     else
     {
         Info("Not implemented yet for output types other than Measure.");
     }
+}
+// Display summary message
+if (totalMeasuresCreated > 0 || totalColumnsCreated > 0)
+{
+    string message = "";
+    if (totalMeasuresCreated > 0)
+    {
+        message += String.Format("{0} measure{1} created", totalMeasuresCreated, totalMeasuresCreated == 1 ? "" : "s");
+    }
+    if (totalColumnsCreated > 0)
+    {
+        if (totalMeasuresCreated > 0) message += " and ";
+        message += String.Format("{0} column{1} created", totalColumnsCreated, totalColumnsCreated == 1 ? "" : "s");
+    }
+    Info(message + ".");
 }
 
 public static class Fx
@@ -268,7 +299,7 @@ public static class Fx
         }
         else
         {
-            selectedMeasure = SelectMeasure(preselect: null, label: label);
+            selectedMeasure = SelectMeasure(label: label);
             if (selectedMeasure == null)
             {
                 Info("No measure selected.");
@@ -276,6 +307,38 @@ public static class Fx
             }
         }
         return selectedMeasure;
+    }
+    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
+    {
+        Table selectedTable = null;
+        if (tables.Count() == 1)
+        {
+            selectedTable = tables.First();
+        }
+        else if (tables.Count() > 1)
+        {
+            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
+            if (selectedTable == null)
+            {
+                Info("No table selected.");
+                return null;
+            }
+        } else             {
+            if (createMeasureTableIfNoneSelected)
+            {
+                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
+            } 
+            else
+            {
+                selectedTable = SelectTable(tables: tables, label: label);
+                if (selectedTable == null)
+                {
+                    Info("No table selected.");
+                    return null;
+                }
+            }
+        }
+        return selectedTable;
     }
     public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
     {
@@ -527,6 +590,11 @@ public static class Fx
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")
@@ -934,6 +1002,7 @@ public static class Fx
 
         public string OutputDestination { get; set; }
         public string OutputProperties { get; set; }
+        public string OutputPropertyNames { get; set; }
         public Function OriginalFunction { get; set; }
         public List<FunctionParameter> Parameters { get; set; }
         private static List<FunctionParameter> ExtractParametersFromExpression(string expression)
@@ -1015,6 +1084,14 @@ public static class Fx
             string nameTemplateDefault = "";
             string formatStringDefault = "";
             string displayFolderDefault = "";
+            string functionGroupName = function.Name;
+            
+            var nameParts = function.Name.Split('.');
+            if (nameParts.Length > 1)
+            {
+                functionGroupName = nameParts[1];
+            }
+            
             string functionNameShort = function.Name;
             string destinationDefault = ""; 
 
@@ -1024,6 +1101,7 @@ public static class Fx
             }
 
             string outputPropertiesDefault = "";
+            string outputPropertyNamesDefault = "";
             
             if (Parameters.Count == 0) {
                 nameTemplateDefault = function.Name;
@@ -1031,17 +1109,19 @@ public static class Fx
                 displayFolderDefault = "";
                 destinationDefault = "";
                 outputPropertiesDefault = functionNameShort;
+                outputPropertyNamesDefault = functionNameShort;
             }
             else
             {
-                nameTemplateDefault = string.Join(" ", Parameters.Select(p => p.Name + "Name"));
-                if(function.Name.Contains("Pct"))
+                nameTemplateDefault = string.Join(" ", Parameters.Select(p => p.Name + "Name")) + " " + functionNameShort;
+                
+                if(function.Name.IndexOf("Pct", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     formatStringDefault = "+0.0%;-0.0%;-";
                 }
                 else
                 {
-                    formatStringDefault = Parameters[0].Name + "FormatStringRoot";
+                    formatStringDefault = Parameters[0].Name + "FormatStringFull";
                 }
 
 
@@ -1051,7 +1131,7 @@ public static class Fx
                         @"{0}DisplayFolder/{1}Name {2}", 
                         Parameters[0].Name, 
                         Parameters[0].Name,
-                        functionNameShort);
+                        functionGroupName);
                 
                 if (Parameters[0].Name.ToUpper().Contains("TABLE"))
                 {
@@ -1067,6 +1147,7 @@ public static class Fx
                 }
                 
                 outputPropertiesDefault = string.Join("|", Parameters.Select(p => p.Name + "Name")) + "|" + functionNameShort;
+                outputPropertyNamesDefault = string.Join("|", Parameters.Select(p => p.Name)) + "|" + functionGroupName;
 
             };
             
@@ -1079,6 +1160,7 @@ public static class Fx
             string myDisplayFolder = function.GetAnnotation("displayFolder");
             string myOutputDestination = function.GetAnnotation("outputDestination");
             string myOutputProperties = function.GetAnnotation("outputProperties");
+            string myOutputPropertyNames = function.GetAnnotation("outputPropertyNames");
 
             if (completeMetadata)
             {
@@ -1149,6 +1231,18 @@ public static class Fx
                     if (string.IsNullOrEmpty(myOutputProperties)) return emptyFunction;
                     function.SetAnnotation("outputProperties", myOutputProperties);
                 }
+
+                if (string.IsNullOrEmpty(myOutputPropertyNames))
+                {
+                    myOutputPropertyNames =
+                        Fx.GetNameFromUser(
+                            Prompt: "Enter output property names for " + function.Name,
+                            Title: "Output Property Names",
+                            DefaultResponse: outputPropertyNamesDefault);
+
+                    if (string.IsNullOrEmpty(myOutputPropertyNames)) return emptyFunction;
+                    function.SetAnnotation("outputPropertyNames", myOutputPropertyNames);
+                }
             }
 
             var functionExtended = new FunctionExtended
@@ -1163,6 +1257,7 @@ public static class Fx
                 OutputDisplayFolder = myDisplayFolder,
                 OutputDestination = myOutputDestination,
                 OutputProperties = myOutputProperties,
+                OutputPropertyNames = myOutputPropertyNames,
                 OriginalFunction = function
 
             };

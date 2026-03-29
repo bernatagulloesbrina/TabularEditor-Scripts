@@ -1,13 +1,17 @@
-#r "Microsoft.VisualBasic
+#r "Microsoft.VisualBasic"
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
+//  2026-03-29 / B.Agullo / added support for propertyNames annotation
 // '2026-03-20 / B.Agullo / added template for name, displayfolder, description and properties annotation
 // '2026-02-20 / B.Agullo / added properties annotation for fieldParameter and dynamic measure creation
 // '2022-05-21 / B.Agullo / 
 // FILTERED MEASURES BY COLUMN VALUES SCRIPT 
 // creates a measure for each of the values in a column filtering the selected base measure
 // step by step instructions at https://www.esbrina-ba.com/creating-filtered-measures-or-how-to-show-the-total-along-with-the-detail-in-a-chart/
+#if TE3
+ScriptHelper.WaitFormVisible = false;
+#endif
 var measures = Selected.Measures;
 if (measures.Count == 0)
 {
@@ -104,6 +108,7 @@ using (var reader = Model.Database.ExecuteReader(query))
             newMeasure.FormatDax();
             newMeasure.FormatString = measure.FormatString;
             newMeasure.SetAnnotation("Properties", propertiesAnnotation);
+            newMeasure.SetAnnotation("PropertyNames", propertiesAnnotationTemplate);
         }
     }
 }
