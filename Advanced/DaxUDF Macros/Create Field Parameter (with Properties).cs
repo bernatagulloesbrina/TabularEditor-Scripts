@@ -1,8 +1,7 @@
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
-
 using Microsoft.VisualBasic;
-using Microsoft.VisualBasic;
+//2026-04-23 / B.Agullo / improvements to the default parameter name suggestion logic (based on property names if available) 
 //2026-03-29 / B.Agullo / added support for propertyNames annotation
 //80% comes from Daniel Otykier --> https://github.com/TabularEditor/TabularEditor3/issues/541#issuecomment-1129228481
 //20% B.Agullo --> pop-up to choose parameter name + all the properties annotation support (split by pipe delimiter and added as additional columns in the field parameter table)
@@ -11,7 +10,9 @@ using Microsoft.VisualBasic;
 // objects). Also, you may change the name of the field parameter table
 // below. NOTE: If used against Power BI Desktop, you must enable unsupported
 // features under File > Preferences (TE2) or Tools > Preferences (TE3).
-var name = Interaction.InputBox("Provide the name for the field parameter", "Parameter name", "Parameter");
+#if TE3
+ScriptHelper.WaitFormVisible = false;
+#endif
 if (Selected.Columns.Count == 0 && Selected.Measures.Count == 0) throw new Exception("No columns or measures selected!");
 // Get objects collection
 var objects = Selected.Columns.Any() ? Selected.Columns.Cast<ITabularTableObject>() : Selected.Measures;
@@ -123,6 +124,13 @@ else
         propertyNames.Add(propertyName);
     }
 }
+// Build default parameter name based on PropertyNames
+string defaultParameterName = propertyNames.Count > 0
+    ? "Parameter " + string.Join(" ", propertyNames)
+    : "Parameter";
+// Ask user for parameter name with smart default
+var name = Interaction.InputBox("Provide the name for the field parameter", "Parameter name", defaultParameterName);
+if (string.IsNullOrEmpty(name)) return;
 // Construct the DAX for the calculated table based on the current selection:
 string dax = "";
 if (maxPropertiesCount > 0)
