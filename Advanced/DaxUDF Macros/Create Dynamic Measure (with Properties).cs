@@ -2,6 +2,8 @@
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
+// 2026-04-23 / B.Agullo /  semidynamic measures have also propertyNames annotation
+// 2026-04-22 / B.Agullo / improvements in the disconnected tables, with distinct key and display values if needed. 
 // 2026-03-29 / B.Agullo / added support for propertyNames annotation
 // 2025-01-07 / B.Agullo
 // Creates a dynamic measure and disconnected tables based on Properties annotations of selected measures.
@@ -10,6 +12,8 @@ using Microsoft.VisualBasic;
 #if TE3
 ScriptHelper.WaitFormVisible = false;
 #endif
+// Configuration: Prefix for disconnected tables (to group them together in Power BI Desktop)
+string tablePrefix = "Selection ";
 // Validate selection
 if (Selected.Measures.Count() < 2)
 {
@@ -110,17 +114,21 @@ else
         propertyNames.Add(propertyName);
     }
 }
-// Step 4: Ask user for dynamic measure name
+// Step 4: Ask user for dynamic measure name with smart default based on PropertyNames
+string defaultDynamicMeasureName = propertyNames.Count > 0
+    ? "Dynamic Measure " + string.Join(" ", propertyNames)
+    : "Dynamic Measure";
 string dynamicMeasureName = Fx.GetNameFromUser(
     Prompt: "Enter the name for the dynamic measure:",
     Title: "Dynamic Measure Name",
-    DefaultResponse: "Dynamic Measure"
+    DefaultResponse: defaultDynamicMeasureName
 );
 if (dynamicMeasureName == null) return;
 // Step 5: Get destination table (use first measure's table)
 Table destinationTable = measuresWithProperties[0].measure.Table;
 // Step 6: Create disconnected tables for each property position
 var propertyTables = new List<Table>();
+var columnBaseNames = new List<string>();
 for (int i = 0; i < propertyCount; i++)
 {
     // Collect distinct values for this property position across all measures
@@ -129,37 +137,44 @@ for (int i = 0; i < propertyCount; i++)
         .Distinct()
         .OrderBy(v => v)
         .ToList();
-    // Create table name using PropertyNames if available, otherwise default
-    string tableName = propertyNames.Count > i ? propertyNames[i] : String.Format("Property{0}", i + 1);
-    // Build DAX expression for calculated table
+    // Create table name with prefix and column base name without prefix
+    string columnBaseName = propertyNames.Count > i ? propertyNames[i] : String.Format("Property{0}", i + 1);
+    string tableName = tablePrefix + columnBaseName;
+    // Build DAX expression for calculated table with 3 columns (Label, Key, Order)
     string tableDax = "{" + Environment.NewLine;
     for (int j = 0; j < distinctValues.Count; j++)
     {
-        tableDax += String.Format("    (\"{0}\", {1})", distinctValues[j], j);
+        tableDax += String.Format("    (\"{0}\", \"{1}\", {2})", distinctValues[j], distinctValues[j], j);
         if (j < distinctValues.Count - 1)
             tableDax += "," + Environment.NewLine;
     }
     tableDax += Environment.NewLine + "}";
     // Create the calculated table
     var propTable = Model.AddCalculatedTable(tableName, tableDax);
-    // Setup columns (handle both TE2 and TE3)
+    // Setup columns (handle both TE2 and TE3) - use columnBaseName without prefix
     var te2 = propTable.Columns.Count == 0;
-    var valueColumn = te2 
-        ? propTable.AddCalculatedTableColumn(tableName, "[Value1]") 
+    var labelColumn = te2 
+        ? propTable.AddCalculatedTableColumn(columnBaseName, "[Value1]") 
         : propTable.Columns["Value1"] as CalculatedTableColumn;
-    var orderColumn = te2 
-        ? propTable.AddCalculatedTableColumn(tableName + " Order", "[Value2]") 
+    var keyColumn = te2 
+        ? propTable.AddCalculatedTableColumn(columnBaseName + " Key", "[Value2]") 
         : propTable.Columns["Value2"] as CalculatedTableColumn;
+    var orderColumn = te2 
+        ? propTable.AddCalculatedTableColumn(columnBaseName + " Order", "[Value3]") 
+        : propTable.Columns["Value3"] as CalculatedTableColumn;
     if (!te2)
     {
-        valueColumn.IsNameInferred = false;
-        valueColumn.Name = tableName;
+        labelColumn.IsNameInferred = false;
+        labelColumn.Name = columnBaseName;
+        keyColumn.IsNameInferred = false;
+        keyColumn.Name = columnBaseName + " Key";
         orderColumn.IsNameInferred = false;
-        orderColumn.Name = tableName + " Order";
+        orderColumn.Name = columnBaseName + " Order";
     }
-    valueColumn.SortByColumn = orderColumn;
+    labelColumn.SortByColumn = orderColumn;
     orderColumn.IsHidden = true;
     propertyTables.Add(propTable);
+    columnBaseNames.Add(columnBaseName);
 }
 // Step 6.5: Create partially dynamic measures in each property table
 int totalPartialMeasures = 0;
@@ -183,11 +198,12 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
-            string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+            string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
             partialMeasureExpression += String.Format(
-                "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
+                "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
                 varName,
-                propertyTables[i].Name
+                propertyTables[i].Name,
+                columnBaseNames[i]
             );
         }
         if (propertyCount > 1)
@@ -204,7 +220,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
-                    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+                    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
                     condition += String.Format(
                         "__{0} = \"{1}\"",
                         varName,
@@ -233,17 +249,19 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         Measure partialMeasure = currentPropertyTable.AddMeasure(partialMeasureName, partialMeasureExpression);
         partialMeasure.FormatDax();
         partialMeasure.SetAnnotation("Properties", propertyValue);
+        partialMeasure.SetAnnotation("PropertyNames", propertyNames.Count > tableIndex ? propertyNames[tableIndex] : String.Format("Property{0}", tableIndex + 1));
         // Build format string expression
         string partialFormatExpression = "";
         // Add variable declarations for OTHER properties (not current table)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
-            string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+            string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
             partialFormatExpression += String.Format(
-                "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
+                "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
                 varName,
-                propertyTables[i].Name
+                propertyTables[i].Name,
+                columnBaseNames[i]
             );
         }
         if (propertyCount > 1)
@@ -260,7 +278,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
-                    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+                    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
                     condition += String.Format(
                         "__{0} = \"{1}\"",
                         varName,
@@ -296,11 +314,12 @@ string measureExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
-    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
     measureExpression += String.Format(
-        "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
+        "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
         varName,
-        propertyTables[i].Name
+        propertyTables[i].Name,
+        columnBaseNames[i]
     );
 }
 measureExpression += "RETURN" + Environment.NewLine;
@@ -313,7 +332,7 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
-        string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+        string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
         condition += String.Format(
             "__{0} = \"{1}\"",
             varName,
@@ -332,11 +351,12 @@ string formatExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
-    string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
     formatExpression += String.Format(
-        "VAR __{0} = SELECTEDVALUE( '{1}'[{1}] )" + Environment.NewLine,
+        "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
         varName,
-        propertyTables[i].Name
+        propertyTables[i].Name,
+        columnBaseNames[i]
     );
 }
 formatExpression += "RETURN" + Environment.NewLine;
@@ -349,7 +369,7 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
-        string varName = propertyNames.Count > i ? propertyNames[i] : propertyTables[i].Name;
+        string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
         condition += String.Format(
             "__{0} = \"{1}\"",
             varName,
