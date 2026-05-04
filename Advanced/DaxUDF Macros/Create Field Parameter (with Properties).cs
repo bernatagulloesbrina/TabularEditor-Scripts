@@ -1,6 +1,7 @@
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
 using Microsoft.VisualBasic;
+
 //2026-04-23 / B.Agullo / improvements to the default parameter name suggestion logic (based on property names if available) 
 //2026-03-29 / B.Agullo / added support for propertyNames annotation
 //80% comes from Daniel Otykier --> https://github.com/TabularEditor/TabularEditor3/issues/541#issuecomment-1129228481
