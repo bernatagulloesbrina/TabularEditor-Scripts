@@ -98,6 +98,8 @@ foreach (var func in selectedFunctions)
     IList<string> currentFormatStrings = new List<string>();
     IList<string> previousOutputProperties = new List<string>() { func.OutputProperties };
     IList<string> currentOutputProperties = new List<string>();
+    IList<string> previousOutputPropertyNames = new List<string>() { func.OutputPropertyNames };
+    IList<string> currentOutputPropertyNames = new List<string>();
     // When iterating the parameters of this specific function, use the mapping created for distinct parameters.
     foreach (var param in func.Parameters)
     {
@@ -107,6 +109,7 @@ foreach (var func in selectedFunctions)
         currentDestinations = new List<string>();
         currentDisplayFolders = new List<string>();
         currentOutputProperties = new List<string>();
+        currentOutputPropertyNames = new List<string>();
         // Retrieve the objects list for this parameter name from the map (prompting was done earlier)
         (IList<string> Values, string Type) paramObject;
         if (!parameterObjectsMap.TryGetValue(param.Name, out paramObject) || paramObject.Type == null || paramObject.Values.Count == 0)
@@ -122,6 +125,7 @@ foreach (var func in selectedFunctions)
             string sDisplayFolder = previousDisplayFolders[i];
             string sDestination = previousDestinations[i];
             string sOutputProperties = previousOutputProperties[i];
+            string sOutputPropertyNames = previousOutputPropertyNames[i];
             foreach (var o in paramObject.Values)
             {
                 //extract original name and format string if the parameter is a measure
@@ -131,12 +135,14 @@ foreach (var func in selectedFunctions)
                 string paramDisplayFolder = "";
                 string paramTable = "";
                 string paramProperties = "";
+                string paramPropertyNames = "";
                 //prepare placeholder
                 string paramNamePlaceholder = param.Name + "Name";
                 string paramFormatStringRootPlaceholder = param.Name + "FormatStringRoot";
                 string paramFormatStringFullPlaceholder = param.Name + "FormatStringFull";
                 string paramDisplayFolderPlaceholder = param.Name + "DisplayFolder";
                 string paramPropertiesPlaceholder = param.Name + "Properties";
+                string paramPropertyNamesPlaceholder = param.Name + "PropertyNames";
                 string paramTablePlaceholder = "";
                 if (paramObject.Type == "Measure")
                 {
@@ -146,6 +152,7 @@ foreach (var func in selectedFunctions)
                     paramDisplayFolder = m.DisplayFolder;
                     paramTable = m.Table.DaxObjectFullName;
                     paramProperties = m.GetAnnotation("Properties") ?? "";
+                    paramPropertyNames = m.GetAnnotation("PropertyNames") ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Column")
@@ -156,6 +163,7 @@ foreach (var func in selectedFunctions)
                     paramDisplayFolder = c.DisplayFolder;
                     paramTable = c.Table.DaxObjectFullName;
                     paramProperties = c.GetAnnotation("Properties") ?? "";
+                    paramPropertyNames = c.GetAnnotation("PropertyNames") ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Table")
@@ -166,6 +174,7 @@ foreach (var func in selectedFunctions)
                     paramDisplayFolder = "";
                     paramTable = t.DaxObjectFullName;
                     paramProperties = t.GetAnnotation("Properties") ?? "";
+                    paramPropertyNames = t.GetAnnotation("PropertyNames") ?? "";
                     paramTablePlaceholder = param.Name;
                 }
                 if (paramFormatStringFull.Contains(";"))
@@ -193,6 +202,9 @@ foreach (var func in selectedFunctions)
                     sOutputProperties
                         .Replace(paramNamePlaceholder, paramName)
                         .Replace(paramPropertiesPlaceholder, paramProperties));
+                currentOutputPropertyNames.Add(
+                    sOutputPropertyNames
+                        .Replace(paramPropertyNamesPlaceholder, paramPropertyNames));
             }
         }
         delimiter = ", ";
@@ -202,6 +214,7 @@ foreach (var func in selectedFunctions)
         previousDisplayFolders = currentDisplayFolders;
         previousFormatStrings = currentFormatStrings;
         previousOutputProperties = currentOutputProperties;
+        previousOutputPropertyNames = currentOutputPropertyNames;
     }
     IList<Table> currentDestinationTables = new List<Table>();
     if (func.OutputType == "Measure" || func.OutputType == "Column")
@@ -236,10 +249,10 @@ foreach (var func in selectedFunctions)
             {
                 measure.SetAnnotation("Properties", currentOutputProperties[i]);
             }
-            // Set PropertyNames annotation as-is from the function
-            if (!string.IsNullOrEmpty(func.OutputPropertyNames))
+            // Set PropertyNames annotation with the transformed outputPropertyNames value
+            if (!string.IsNullOrEmpty(currentOutputPropertyNames[i]))
             {
-                measure.SetAnnotation("PropertyNames", func.OutputPropertyNames);
+                measure.SetAnnotation("PropertyNames", currentOutputPropertyNames[i]);
             }
             totalMeasuresCreated++;
         }
@@ -260,10 +273,10 @@ foreach (var func in selectedFunctions)
             {
                 column.SetAnnotation("Properties", currentOutputProperties[i]);
             }
-            // Set PropertyNames annotation as-is from the function
-            if (!string.IsNullOrEmpty(func.OutputPropertyNames))
+            // Set PropertyNames annotation with the transformed outputPropertyNames value
+            if (!string.IsNullOrEmpty(currentOutputPropertyNames[i]))
             {
-                column.SetAnnotation("PropertyNames", func.OutputPropertyNames);
+                column.SetAnnotation("PropertyNames", currentOutputPropertyNames[i]);
             }
         }
     }
