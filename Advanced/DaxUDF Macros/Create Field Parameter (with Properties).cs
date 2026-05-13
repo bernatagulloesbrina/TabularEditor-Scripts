@@ -1,5 +1,7 @@
 #r "Microsoft.VisualBasic"
+#r "System.Drawing"
 using System.Windows.Forms;
+
 using Microsoft.VisualBasic;
 
 //2026-04-23 / B.Agullo / improvements to the default parameter name suggestion logic (based on property names if available) 
@@ -574,12 +576,13 @@ public static class Fx
         {
             Text = "Search:",
             AutoSize = true,
-            Location = new System.Drawing.Point(0, 6)
+            Location = new System.Drawing.Point(0, 8),
+            Width = 70
         };
         TextBox searchBox = new TextBox
         {
-            Location = new System.Drawing.Point(60, 3),
-            Width = customWidth - 120,
+            Location = new System.Drawing.Point(75, 5),
+            Width = customWidth - 115,
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
         searchPanel.Controls.Add(searchLabel);

@@ -1,4 +1,5 @@
 #r "Microsoft.VisualBasic"
+#r "System.Drawing"
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
@@ -9,6 +10,7 @@ using Microsoft.VisualBasic;
 //Creates measures based on DAX UDFs 
 //Check the blog post for futher information: https://www.esbrina-ba.com/automatically-create-measures-with-dax-user-defined-functions/
 using System.Text.RegularExpressions;
+
 #if TE3
 ScriptHelper.WaitFormVisible = false;
 #endif
@@ -682,12 +684,13 @@ public static class Fx
         {
             Text = "Search:",
             AutoSize = true,
-            Location = new System.Drawing.Point(0, 6)
+            Location = new System.Drawing.Point(0, 8),
+            Width = 70
         };
         TextBox searchBox = new TextBox
         {
-            Location = new System.Drawing.Point(60, 3),
-            Width = customWidth - 120,
+            Location = new System.Drawing.Point(75, 5),
+            Width = customWidth - 115,
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
         searchPanel.Controls.Add(searchLabel);

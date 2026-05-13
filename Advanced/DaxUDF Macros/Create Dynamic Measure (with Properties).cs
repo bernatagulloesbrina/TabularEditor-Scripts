@@ -1,3 +1,4 @@
+#r "System.Drawing"
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
 
@@ -775,12 +776,13 @@ public static class Fx
         {
             Text = "Search:",
             AutoSize = true,
-            Location = new System.Drawing.Point(0, 6)
+            Location = new System.Drawing.Point(0, 8),
+            Width = 70
         };
         TextBox searchBox = new TextBox
         {
-            Location = new System.Drawing.Point(60, 3),
-            Width = customWidth - 120,
+            Location = new System.Drawing.Point(75, 5),
+            Width = customWidth - 115,
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
         searchPanel.Controls.Add(searchLabel);
