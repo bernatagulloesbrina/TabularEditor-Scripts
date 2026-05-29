@@ -3,6 +3,9 @@
 using System.Windows.Forms;
 
 using Microsoft.VisualBasic;
+// 2026-05-30 / B.Agullo / FormatString values with embedded double-quotes are now escaped (doubled) when written into a DAX string literal
+// 2026-05-30 / B.Agullo / Fixed missing comma between SWITCH condition and its result value in all generated DAX expressions
+// 2026-05-30 / B.Agullo / PropertyNames with spaces are now sanitised (spaces removed) before use as DAX variable names; display names are unchanged
 // 2026-04-23 / B.Agullo /  semidynamic measures have also propertyNames annotation
 // 2026-04-22 / B.Agullo / improvements in the disconnected tables, with distinct key and display values if needed. 
 // 2026-03-29 / B.Agullo / added support for propertyNames annotation
@@ -125,6 +128,8 @@ string dynamicMeasureName = Fx.GetNameFromUser(
     DefaultResponse: defaultDynamicMeasureName
 );
 if (dynamicMeasureName == null) return;
+// DAX variable names cannot contain spaces – strip them from propertyNames
+List<string> daxSafePropertyNames = propertyNames.Select(p => p.Replace(" ", "")).ToList();
 // Step 5: Get destination table (use first measure's table)
 Table destinationTable = measuresWithProperties[0].measure.Table;
 // Step 6: Create disconnected tables for each property position
@@ -199,7 +204,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
-            string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+            string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
             partialMeasureExpression += String.Format(
                 "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
                 varName,
@@ -221,7 +226,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
-                    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+                    string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
                     condition += String.Format(
                         "__{0} = \"{1}\"",
                         varName,
@@ -257,7 +262,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
         for (int i = 0; i < propertyCount; i++)
         {
             if (i == tableIndex) continue;
-            string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+            string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
             partialFormatExpression += String.Format(
                 "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
                 varName,
@@ -279,7 +284,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                     if (i == tableIndex) continue;
                     if (!firstCondition)
                         condition += Environment.NewLine + "        && ";
-                    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+                    string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
                     condition += String.Format(
                         "__{0} = \"{1}\"",
                         varName,
@@ -291,7 +296,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
                 // Use format string or format string expression
                 string formatValue = !string.IsNullOrEmpty(item.measure.FormatStringExpression)
                     ? item.measure.FormatStringExpression
-                    : String.Format("\"{0}\"", item.measure.FormatString);
+                    : String.Format("\"{0}\"", item.measure.FormatString.Replace("\"", "\"\""));
                 partialFormatExpression += String.Format("        {0}," + Environment.NewLine, formatValue);
             }
             partialFormatExpression += "    \"\"" + Environment.NewLine + ")";
@@ -302,7 +307,7 @@ for (int tableIndex = 0; tableIndex < propertyTables.Count; tableIndex++)
             partialFormatExpression += "RETURN" + Environment.NewLine;
             string formatValue = !string.IsNullOrEmpty(matchingMeasures[0].measure.FormatStringExpression)
                 ? matchingMeasures[0].measure.FormatStringExpression
-                : String.Format("\"{0}\"", matchingMeasures[0].measure.FormatString);
+                : String.Format("\"{0}\"", matchingMeasures[0].measure.FormatString.Replace("\"", "\"\""));
             partialFormatExpression += formatValue;
         }
         // Set format string expression
@@ -315,7 +320,7 @@ string measureExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
-    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+    string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
     measureExpression += String.Format(
         "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
         varName,
@@ -333,7 +338,7 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
-        string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+        string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
         condition += String.Format(
             "__{0} = \"{1}\"",
             varName,
@@ -352,7 +357,7 @@ string formatExpression = "";
 // Add variable declarations for each property
 for (int i = 0; i < propertyCount; i++)
 {
-    string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+    string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
     formatExpression += String.Format(
         "VAR __{0} = SELECTEDVALUE( '{1}'[{2} Key] )" + Environment.NewLine,
         varName,
@@ -370,7 +375,7 @@ foreach (var item in measuresWithProperties)
     {
         if (i > 0)
             condition += Environment.NewLine + "        && ";
-        string varName = propertyNames.Count > i ? propertyNames[i] : columnBaseNames[i];
+        string varName = daxSafePropertyNames.Count > i ? daxSafePropertyNames[i] : columnBaseNames[i].Replace(" ", "");
         condition += String.Format(
             "__{0} = \"{1}\"",
             varName,
@@ -381,7 +386,7 @@ foreach (var item in measuresWithProperties)
     // Use format string or format string expression
     string formatValue = !string.IsNullOrEmpty(item.measure.FormatStringExpression)
         ? item.measure.FormatStringExpression
-        : String.Format("\"{0}\"", item.measure.FormatString);
+        : String.Format("\"{0}\"", item.measure.FormatString.Replace("\"", "\"\""));
     formatExpression += String.Format("        {0}," + Environment.NewLine, formatValue);
 }
 formatExpression += "    \"\"" + Environment.NewLine + ")";
