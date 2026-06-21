@@ -1,11 +1,11 @@
+#r "System.Drawing"
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
-
-
-
 using Microsoft.VisualBasic;
 using System.IO;
 using Newtonsoft.Json.Linq;
+
+// 2026-06-21 / B.Agullo: now updates the report directly in Power BI Desktop without reopening it.
 // 2025-10-22/B.Agullo
 // This script copies column header formatting from one header to multiple other headers in a table visual.
 #if TE3
@@ -99,9 +99,181 @@ foreach (var targetHeader in targetHeaders)
 }
 Rx.SaveVisual(selectedVisual);
 Output(String.Format(@"{0} headers updated with formatting from '{1}'.", updatedCount, sourceHeader));
+Rx.UpdateDesktop(report);
 
 public static class Fx
 {
+    public static Measure GetSelectedMeasure(IEnumerable<Measure> measures, string label = "Select Measure")
+    {
+        Measure selectedMeasure = null;
+        if (measures.Count() == 1)
+        {
+            selectedMeasure = measures.First();
+        }
+        else
+        {
+            selectedMeasure = SelectMeasure(label: label);
+            if (selectedMeasure == null)
+            {
+                Info("No measure selected.");
+                return null;
+            }
+        }
+        return selectedMeasure;
+    }
+    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
+    {
+        Table selectedTable = null;
+        if (tables.Count() == 1)
+        {
+            selectedTable = tables.First();
+        }
+        else if (tables.Count() > 1)
+        {
+            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
+            if (selectedTable == null)
+            {
+                Info("No table selected.");
+                return null;
+            }
+        } else             {
+            if (createMeasureTableIfNoneSelected)
+            {
+                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
+            } 
+            else
+            {
+                selectedTable = SelectTable(tables: tables, label: label);
+                if (selectedTable == null)
+                {
+                    Info("No table selected.");
+                    return null;
+                }
+            }
+        }
+        return selectedTable;
+    }
+    public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
+    {
+        if (!model.Tables.OfType<CalculationGroupTable>().Any())
+        {
+            Info("No calculation groups found in the model.");
+            return null;
+        }
+        // Create a TreeView form
+        Form form = new Form
+        {
+            Text = label,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 600,
+            Height = 500,
+            Padding = new Padding(10)
+        };
+        TreeView treeView = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            CheckBoxes = true
+        };
+        // Track selections per calculation group
+        var selectionMap = new Dictionary<string, TreeNode>();
+        // Populate tree with calculation groups and items
+        foreach (var calcGroup in model.Tables.OfType<CalculationGroupTable>())
+        {
+            TreeNode groupNode = new TreeNode(calcGroup.Name)
+            {
+                Tag = calcGroup
+            };
+            foreach (var calcItem in calcGroup.CalculationItems)
+            {
+                TreeNode itemNode = new TreeNode(calcItem.Name)
+                {
+                    Tag = calcItem
+                };
+                groupNode.Nodes.Add(itemNode);
+            }
+            treeView.Nodes.Add(groupNode);
+            groupNode.Expand();
+        }
+        // Handle BeforeCheck to prevent checking group nodes
+        treeView.BeforeCheck += (sender, e) =>
+        {
+            // Prevent checking calculation group nodes (only allow calculation items)
+            if (e.Node.Tag is CalculationGroupTable)
+            {
+                e.Cancel = true;
+            }
+        };
+        // Handle node check events to enforce "one per group" rule
+        treeView.AfterCheck += (sender, e) =>
+        {
+            if (e.Node.Tag is CalculationItem)
+            {
+                var calcItem = (CalculationItem)e.Node.Tag;
+                string groupName = calcItem.CalculationGroupTable.Name;
+                if (e.Node.Checked)
+                {
+                    // Uncheck any previously selected item in this group
+                    if (selectionMap.ContainsKey(groupName))
+                    {
+                        selectionMap[groupName].Checked = false;
+                    }
+                    selectionMap[groupName] = e.Node;
+                }
+                else
+                {
+                    // Remove from selection if unchecked
+                    if (selectionMap.ContainsKey(groupName) && selectionMap[groupName] == e.Node)
+                    {
+                        selectionMap.Remove(groupName);
+                    }
+                }
+            }
+        };
+        // Button panel
+        FlowLayoutPanel buttonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(5)
+        };
+        Button okButton = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Width = 80,
+            Height = 30
+        };
+        Button cancelButton = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Width = 80,
+            Height = 30
+        };
+        buttonPanel.Controls.Add(okButton);
+        buttonPanel.Controls.Add(cancelButton);
+        form.Controls.Add(treeView);
+        form.Controls.Add(buttonPanel);
+        // Show dialog
+        ResetWaitCursor();
+        DialogResult result = form.ShowDialog();
+        if (result == DialogResult.Cancel)
+        {
+            Info("Selection cancelled.");
+            return null;
+        }
+        // Build result dictionary: CalculationGroupName -> CalculationItemName
+        var selectedItems = new Dictionary<string, string>();
+        foreach (var kvp in selectionMap)
+        {
+            if (kvp.Value.Checked)
+            {
+                selectedItems[kvp.Key] = kvp.Value.Text;
+            }
+        }
+        return selectedItems;
+    }
     public static void CheckCompatibilityVersion(Model model, int requiredVersion, string customMessage = "Compatibility level must be raised to {0} to run this script. Do you want raise the compatibility level?")
     {
         if (model.Database.CompatibilityLevel < requiredVersion)
@@ -229,13 +401,35 @@ public static class Fx
             return null as Measure;
         }
     }
+    // In TE2 scripts run inside an "Hourglass" that sets Application.UseWaitCursor = true for the
+    // whole application, so dialog boxes show a busy cursor (TE3 solves this with WaitFormVisible).
+    // Turn the flag off and nudge Windows (WM_SETCURSOR) to refresh the cursor immediately,
+    // otherwise it only updates on the next mouse message. Call this before showing any dialog.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wp, IntPtr lp);
+    public static void ResetWaitCursor()
+    {
+        if (!Application.UseWaitCursor) return;
+        Application.UseWaitCursor = false;
+        Cursor.Current = Cursors.Default;
+        Form f = Form.ActiveForm;
+        if (f != null && f.Handle != IntPtr.Zero)
+            SendMessage(f.Handle, 0x20, f.Handle, (IntPtr)1); // WM_SETCURSOR
+    }
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
+        ResetWaitCursor();
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")
     {
+        ResetWaitCursor();
         var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         return result == DialogResult.Yes;
     }
@@ -273,7 +467,7 @@ public static class Fx
                 Error("Invalid selection type");
                 return returnEmpty;
         }
-        if (selectedValues.Count == 0) return returnEmpty; 
+        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty; 
         return (Values:selectedValues, Type:selectionType);
     }
     public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
@@ -292,20 +486,102 @@ public static class Fx
             StartPosition = FormStartPosition.CenterScreen,
             Padding = new Padding(20)
         };
+        // Keep track of selected items across filtering
+        HashSet<string> selectedItemsSet = new HashSet<string>();
+        bool isRestoringSelections = false;
+        // Search panel at the top
+        Panel searchPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 35,
+            Padding = new Padding(0, 0, 0, 5)  // Add 5px bottom padding for spacing
+        };
+        Label searchLabel = new System.Windows.Forms.Label
+        {
+            Text = "Search:",
+            AutoSize = true,
+            Location = new System.Drawing.Point(0, 8),
+            Width = 70
+        };
+        TextBox searchBox = new TextBox
+        {
+            Location = new System.Drawing.Point(75, 5),
+            Width = customWidth - 115,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right
+        };
+        searchPanel.Controls.Add(searchLabel);
+        searchPanel.Controls.Add(searchBox);
+        // ListBox panel in the middle
+        Panel listBoxPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 35, 0, 75)  // Top padding = searchPanel height, Bottom = buttonPanel height
+        };
         ListBox listbox = new ListBox
         {
             Dock = DockStyle.Fill,
             SelectionMode = MultiSelect ? SelectionMode.MultiExtended : SelectionMode.One
         };
+        listBoxPanel.Controls.Add(listbox);
+        // Initial population
         listbox.Items.AddRange(OptionList.ToArray());
         if (!MultiSelect && OptionList.Count > 0)
             listbox.SelectedItem = OptionList[0];
+        // Track manual selection changes
+        listbox.SelectedIndexChanged += delegate
+        {
+            // Skip if we're programmatically restoring selections
+            if (isRestoringSelections) return;
+            // Get current items in listbox
+            HashSet<string> currentItems = new HashSet<string>();
+            foreach (object item in listbox.Items)
+            {
+                currentItems.Add(item.ToString());
+            }
+            // Remove only currently visible items that are NOT selected
+            foreach (string item in currentItems)
+            {
+                if (!listbox.SelectedItems.Cast<object>().Any(selected => selected.ToString() == item))
+                {
+                    selectedItemsSet.Remove(item);
+                }
+            }
+            // Add currently selected items
+            foreach (object item in listbox.SelectedItems)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
+        };
+        // Search/filter functionality
+        searchBox.TextChanged += delegate
+        {
+            string searchText = searchBox.Text;
+            // Filter the list
+            var filteredList = OptionList
+                .Where(item => item.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            // Set flag to prevent SelectedIndexChanged from firing during restoration
+            isRestoringSelections = true;
+            // Repopulate listbox
+            listbox.Items.Clear();
+            listbox.Items.AddRange(filteredList.ToArray());
+            // Restore previous selections
+            for (int i = 0; i < listbox.Items.Count; i++)
+            {
+                if (selectedItemsSet.Contains(listbox.Items[i].ToString()))
+                {
+                    listbox.SetSelected(i, true);
+                }
+            }
+            // Re-enable selection tracking
+            isRestoringSelections = false;
+        };
         FlowLayoutPanel buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 70,
+            Height = 75,
             FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(10)
+            Padding = new Padding(10, 5, 10, 10)  // Add top padding for spacing from listbox
         };
         Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect , Height = 50, Width = 150};
         Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect, Height = 50, Width = 150 };
@@ -315,20 +591,33 @@ public static class Fx
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, true);
+            // Update tracking set with all currently visible items
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
         };
         selectNoneButton.Click += delegate
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, false);
+            // Remove all currently visible items from tracking set
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Remove(item.ToString());
+            }
         };
         buttonPanel.Controls.Add(selectAllButton);
         buttonPanel.Controls.Add(selectNoneButton);
         buttonPanel.Controls.Add(okButton);
         buttonPanel.Controls.Add(cancelButton);
-        form.Controls.Add(listbox);
-        form.Controls.Add(buttonPanel);
+        // Add controls in proper order for Dock: Bottom first, Top second, Fill last
+        form.Controls.Add(buttonPanel);    // Bottom - add first
+        form.Controls.Add(searchPanel);    // Top - add second
+        form.Controls.Add(listBoxPanel);   // Fill - add last
         form.Width = customWidth;
         form.Height = customHeight;
+        ResetWaitCursor();
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
@@ -489,9 +778,32 @@ public static class Fx
     public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
     {
         measures ??= model.AllMeasures;
-        IList<string> measureNames = measures.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedMeasureNames = ChooseStringMultiple(measureNames, label: label);
-        return selectedMeasureNames; 
+        // Create display strings with format: TableName\DisplayFolder\[MeasureName]
+        var measureDisplayMap = new Dictionary<string, string>();
+        var displayList = new List<string>();
+        foreach (var measure in measures.OrderBy(m => m.Table.Name).ThenBy(m => m.DisplayFolder).ThenBy(m => m.Name))
+        {
+            string displayString;
+            if (string.IsNullOrEmpty(measure.DisplayFolder))
+            {
+                displayString = String.Format("{0}\\[{1}]", measure.Table.Name, measure.Name);
+            }
+            else
+            {
+                displayString = String.Format("{0}\\{1}\\[{2}]", measure.Table.Name, measure.DisplayFolder, measure.Name);
+            }
+            measureDisplayMap[displayString] = measure.DaxObjectFullName;
+            displayList.Add(displayString);
+        }
+        // Show the display list to user
+        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label);
+        if (selectedDisplayStrings == null || selectedDisplayStrings.Count == 0)
+            return new List<string>();
+        // Map back to DaxObjectFullName
+        var selectedMeasureNames = selectedDisplayStrings
+            .Select(display => measureDisplayMap[display])
+            .ToList();
+        return selectedMeasureNames;
     }
     public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
     {
@@ -821,6 +1133,28 @@ public static class Rx
 
     {
 
+        // Detect reports currently open in Power BI Desktop (PBIR/PBIP format, via pbir CLI)
+
+        PbirDesktopStatus pbirStatus;
+
+        string pbirMessage;
+
+        List<string> openReports = GetOpenPbirReportPaths(out pbirStatus, out pbirMessage);
+
+
+
+        // Inform the user when pbir is missing or the Desktop preview feature is off
+
+        if (!string.IsNullOrEmpty(pbirMessage))
+
+        {
+
+            Info(pbirMessage);
+
+        }
+
+
+
         // Load recent paths
 
         List<string> recentPaths = LoadRecentPbirPaths();
@@ -833,9 +1167,73 @@ public static class Rx
 
 
 
-        // Present options to the user
+        // If exactly one report is open in Desktop, use it directly (skip manual selection)
 
-        var options = new List<string>(recentPaths);
+        if (openReports.Count == 1)
+
+        {
+
+            string autoPath = openReports[0];
+
+            UpdateRecentPbirPaths(autoPath, recentPaths);
+
+            return autoPath;
+
+        }
+
+
+
+        // More than one PBIP report is open => the right target is ambiguous. Warn the user
+
+        // so they consciously pick the one matching the model they are working on.
+
+        if (openReports.Count > 1)
+
+        {
+
+            Info(MultipleInstancesMessage(openReports.Count));
+
+        }
+
+
+
+        // Present options to the user: currently-open reports first (clearly marked),
+
+        // then recent paths, then browse. Several Desktop instances => several open reports.
+
+        const string openPrefix = "\u25CF [Open in Power BI Desktop]  ";
+
+        var displayToPath = new Dictionary<string, string>();
+
+        var options = new List<string>();
+
+
+
+        foreach (string p in openReports)
+
+        {
+
+            string display = openPrefix + p;
+
+            if (!displayToPath.ContainsKey(display))
+
+            {
+
+                displayToPath[display] = p;
+
+                options.Add(display);
+
+            }
+
+        }
+
+        foreach (string p in recentPaths)
+
+        {
+
+            if (!options.Contains(p) && !displayToPath.ContainsValue(p)) options.Add(p);
+
+        }
 
         options.Add("Browse for new file...");
 
@@ -856,6 +1254,14 @@ public static class Rx
         {
 
             chosenPath = GetPbirFilePath(label);
+
+        }
+
+        else if (displayToPath.ContainsKey(selected))
+
+        {
+
+            chosenPath = displayToPath[selected];
 
         }
 
@@ -940,6 +1346,564 @@ public static class Rx
         Directory.CreateDirectory(Path.GetDirectoryName(RecentPathsFile));
 
         File.WriteAllText(RecentPathsFile, JsonConvert.SerializeObject(recentPaths, Newtonsoft.Json.Formatting.Indented));
+
+    }
+
+
+
+    // Outcome of probing Power BI Desktop through the pbir CLI.
+
+    public enum PbirDesktopStatus
+
+    {
+
+        Ready,           // pbir ran and the local API responded (feature enabled)
+
+        NotInstalled,    // the pbir executable could not be found
+
+        FeatureDisabled, // pbir ran but the Desktop local-API preview feature is off / unavailable
+
+        ThickReportOnly, // pbir ran but the only open report(s) are thick (.pbix), not PBIR
+
+        Error            // any other failure (could not read or parse the response)
+
+    }
+
+
+
+    // Captures the result of launching an external process.
+
+    private sealed class PbirProcResult
+
+    {
+
+        public bool Started;   // false => executable not found / could not start
+
+        public string StdOut;
+
+        public string StdErr;
+
+    }
+
+
+
+    // Returns the definition.pbir path(s) of the report(s) currently open in Power BI Desktop.
+
+    // Uses the 'pbir' CLI (https://github.com/Kurt-Buhler/pbir). Returns an empty list if the
+
+    // CLI is unavailable, the Desktop preview feature is off, no Desktop instance is open, or
+
+    // only thick (.pbix) reports are open.
+
+    public static List<string> GetOpenPbirReportPaths()
+
+    {
+
+        PbirDesktopStatus status;
+
+        string message;
+
+        return GetOpenPbirReportPaths(out status, out message);
+
+    }
+
+
+
+    // Overload that also reports why detection succeeded or failed via 'status' and a
+
+    // user-facing 'message' (null when no message is needed, e.g. detection worked).
+
+    public static List<string> GetOpenPbirReportPaths(out PbirDesktopStatus status, out string message)
+
+    {
+
+        var result = new List<string>();
+
+        status = PbirDesktopStatus.Error;
+
+        message = null;
+
+
+
+        // 1) Check that the pbir CLI is installed
+
+        PbirProcResult run = RunPbir("desktop list --json");
+
+        if (run == null || !run.Started)
+
+        {
+
+            status = PbirDesktopStatus.NotInstalled;
+
+            message =
+
+                "Auto-detection of the open report is unavailable because the 'pbir' CLI was not found.\n\n" +
+
+                "Install it with:  uv tool install pbir-cli\n\n" +
+
+                "Falling back to manual selection.";
+
+            return result;
+
+        }
+
+
+
+        // 2) Check that Power BI Desktop's local API responded (preview feature enabled)
+
+        string output = run.StdOut;
+
+        if (!LooksLikeJson(output))
+
+        {
+
+            string combined = ((output ?? "") + " " + (run.StdErr ?? "")).ToLowerInvariant();
+
+            if (combined.Contains("secure local") || combined.Contains("external tool") ||
+
+                combined.Contains("preview") || combined.Contains("not enabled"))
+
+            {
+
+                status = PbirDesktopStatus.FeatureDisabled;
+
+                message = FeatureDisabledMessage();
+
+            }
+
+            else
+
+            {
+
+                status = PbirDesktopStatus.Error;
+
+                message = "Could not read Power BI Desktop status from pbir. Falling back to manual selection.";
+
+            }
+
+            return result;
+
+        }
+
+
+
+        try
+
+        {
+
+            var root = Newtonsoft.Json.Linq.JObject.Parse(output);
+
+            string apiStatus = (string)root["status"];
+
+
+
+            if (!string.IsNullOrEmpty(apiStatus) &&
+
+                !apiStatus.Equals("ready", StringComparison.OrdinalIgnoreCase))
+
+            {
+
+                status = PbirDesktopStatus.FeatureDisabled;
+
+                message = FeatureDisabledMessage();
+
+                return result;
+
+            }
+
+
+
+            status = PbirDesktopStatus.Ready;
+
+
+
+            var instances = root["instances"] as Newtonsoft.Json.Linq.JArray;
+
+            if (instances != null)
+
+            {
+
+                foreach (var inst in instances)
+
+                {
+
+                    string reportDir = (string)inst["reportDir"];
+
+                    string currentFilePath = (string)inst["currentFilePath"];
+
+                    string pbir = DerivePbirPath(reportDir, currentFilePath);
+
+                    if (pbir != null && !result.Contains(pbir)) result.Add(pbir);
+
+                }
+
+            }
+
+
+
+            // pbir's 'desktop list' only surfaces PBIP reports; thick (.pbix) reports never
+
+            // appear there. Detect them by comparing the number of open Power BI Desktop
+
+            // report windows against the number of PBIP reports pbir reported.
+
+            int openWindowCount = CountOpenDesktopReportWindows();
+
+            int thickCount = openWindowCount - result.Count;
+
+            if (thickCount < 0) thickCount = 0;
+
+
+
+            if (result.Count == 0 && thickCount > 0)
+
+            {
+
+                // Only thick (.pbix) report(s) are open - none can be used
+
+                status = PbirDesktopStatus.ThickReportOnly;
+
+                message = ThickReportMessage();
+
+            }
+
+            else if (result.Count > 0 && thickCount > 0)
+
+            {
+
+                // A mix of PBIR and thick (.pbix) reports is open - warn that .pbix are ignored
+
+                message = MixedReportsMessage(thickCount);
+
+            }
+
+        }
+
+        catch
+
+        {
+
+            status = PbirDesktopStatus.Error;
+
+            message = "Could not parse Power BI Desktop status from pbir. Falling back to manual selection.";
+
+        }
+
+
+
+        return result;
+
+    }
+
+
+
+    private static string FeatureDisabledMessage()
+
+    {
+
+        return
+
+            "Auto-detection of the open report is unavailable because Power BI Desktop's local API did not respond.\n\n" +
+
+            "Please make sure that:\n" +
+
+            "  1. Power BI Desktop is running with the report open, and\n" +
+
+            "  2. The preview feature is enabled:\n" +
+
+            "       File > Options and settings > Options > Preview features >\n" +
+
+            "       'Enable external tool access to Power BI Desktop through secure local APIs'\n\n" +
+
+            "Falling back to manual selection.";
+
+    }
+
+
+
+    private static string ThickReportMessage()
+
+    {
+
+        return
+
+            "The report currently open in Power BI Desktop is a thick report (.pbix), " +
+
+            "so it cannot be auto-detected or edited by the report-layer scripts.\n\n" +
+
+            "These scripts require the PBIR (enhanced report format) on disk. To use them:\n" +
+
+            "  1. In Power BI Desktop: File > Save as > Power BI project (.pbip), and\n" +
+
+            "  2. Enable PBIR under File > Options > Preview features > 'Store reports using enhanced metadata format (PBIR)'.\n\n" +
+
+            "Falling back to manual selection.";
+
+    }
+
+
+
+    private static string MixedReportsMessage(int thickCount)
+
+    {
+
+        string plural = thickCount == 1 ? "report is" : "reports are";
+
+        return String.Format(
+
+            "Note: {0} thick (.pbix) {1} also open in Power BI Desktop.\n\n" +
+
+            "Thick reports cannot be edited by the report-layer scripts, so only the " +
+
+            "PBIR (.pbip) report(s) are being considered.",
+
+            thickCount, plural);
+
+    }
+
+
+
+    private static string MultipleInstancesMessage(int openCount)
+
+    {
+
+        return String.Format(
+
+            "Warning: {0} Power BI Desktop reports (PBIP) are currently open.\n\n" +
+
+            "Auto-detection cannot tell which one matches the model you are working on, " +
+
+            "so please pick the intended report from the list. Reports currently open in " +
+
+            "Power BI Desktop are marked with a bullet at the top.",
+
+            openCount);
+
+    }
+
+
+
+    // Counts the report windows currently open in Power BI Desktop. Each open report is a
+
+    // PBIDesktop.exe process with a non-empty main window title; thick (.pbix) reports are
+
+    // counted here even though pbir's 'desktop list' does not report them.
+
+    private static int CountOpenDesktopReportWindows()
+
+    {
+
+        try
+
+        {
+
+            return System.Diagnostics.Process.GetProcessesByName("PBIDesktop")
+
+                .Select(p => { try { return p.MainWindowTitle; } catch { return null; } })
+
+                .Where(t => !string.IsNullOrEmpty(t))
+
+                .Distinct()
+
+                .Count();
+
+        }
+
+        catch
+
+        {
+
+            return 0;
+
+        }
+
+    }
+
+    // location (~/.local/bin/pbir.exe). Started=false means pbir is not installed.
+
+    private static PbirProcResult RunPbir(string arguments)
+
+    {
+
+        PbirProcResult r = RunCommandCapture("pbir", arguments);
+
+        if (r.Started) return r;
+
+
+
+        string fallback = Path.Combine(
+
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+
+            ".local", "bin", "pbir.exe");
+
+        if (File.Exists(fallback))
+
+        {
+
+            return RunCommandCapture(fallback, arguments);
+
+        }
+
+
+
+        return r; // Started = false
+
+    }
+
+
+
+    private static PbirProcResult RunCommandCapture(string fileName, string arguments)
+
+    {
+
+        var r = new PbirProcResult();
+
+        try
+
+        {
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+
+            {
+
+                FileName = fileName,
+
+                Arguments = arguments,
+
+                UseShellExecute = false,
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                CreateNoWindow = true
+
+            };
+
+
+
+            using (var proc = System.Diagnostics.Process.Start(psi))
+
+            {
+
+                r.Started = true;
+
+                r.StdOut = proc.StandardOutput.ReadToEnd();
+
+                r.StdErr = proc.StandardError.ReadToEnd();
+
+                proc.WaitForExit(15000);
+
+            }
+
+        }
+
+        catch (System.ComponentModel.Win32Exception)
+
+        {
+
+            r.Started = false; // executable not found
+
+        }
+
+        catch
+
+        {
+
+            r.Started = false;
+
+        }
+
+        return r;
+
+    }
+
+
+
+    private static bool LooksLikeJson(string s)
+
+    {
+
+        if (string.IsNullOrWhiteSpace(s)) return false;
+
+        string t = s.TrimStart();
+
+        return t.StartsWith("{") || t.StartsWith("[");
+
+    }
+
+
+
+    // Maps a pbir instance (reportDir / currentFilePath) to an existing definition.pbir path.
+
+    private static string DerivePbirPath(string reportDir, string currentFilePath)
+
+    {
+
+        // Case 1: pbir already resolved the report folder
+
+        if (!string.IsNullOrEmpty(reportDir))
+
+        {
+
+            if (reportDir.EndsWith(".pbir", StringComparison.OrdinalIgnoreCase) && File.Exists(reportDir))
+
+                return reportDir;
+
+
+
+            string candidate = Path.Combine(reportDir, "definition.pbir");
+
+            if (File.Exists(candidate)) return candidate;
+
+        }
+
+
+
+        // Case 2: derive the report folder from an open .pbip project
+
+        if (!string.IsNullOrEmpty(currentFilePath) &&
+
+            currentFilePath.EndsWith(".pbip", StringComparison.OrdinalIgnoreCase))
+
+        {
+
+            string dir = Path.GetDirectoryName(currentFilePath);
+
+            string name = Path.GetFileNameWithoutExtension(currentFilePath);
+
+
+
+            string candidate = Path.Combine(dir, name + ".Report", "definition.pbir");
+
+            if (File.Exists(candidate)) return candidate;
+
+
+
+            try
+
+            {
+
+                foreach (string reportFolder in Directory.GetDirectories(dir, "*.Report"))
+
+                {
+
+                    string c = Path.Combine(reportFolder, "definition.pbir");
+
+                    if (File.Exists(c)) return c;
+
+                }
+
+            }
+
+            catch { }
+
+        }
+
+
+
+        return null;
 
     }
 
@@ -1527,6 +2491,66 @@ public static class Rx
 
 
 
+    // Pushes the just-saved on-disk report changes into the open Power BI Desktop instance via the
+
+    // pbir CLI (https://github.com/Kurt-Buhler/pbir), so report-layer scripts reflect their edits on
+
+    // the canvas without a manual reopen. The report is assumed valid (it was already initialised).
+
+    public static void UpdateDesktop(ReportExtended report)
+
+    {
+
+        // PagesFilePath is <Name>.Report/definition/pages/pages.json; walk up three levels to reach
+
+        // the report folder (<Name>.Report), which is what 'pbir desktop reload' expects as its path.
+
+        string reportDir =
+
+            Path.GetDirectoryName(
+
+                Path.GetDirectoryName(
+
+                    Path.GetDirectoryName(report.PagesFilePath)));
+
+
+
+        PbirProcResult run = RunPbir(String.Format("desktop reload \"{0}\"", reportDir));
+
+
+
+        // Note: do NOT show a modal dialog (Info) here. Reloading the Power BI Desktop instance
+
+        // that Tabular Editor is live-connected to queues a "connection changed" event. A modal
+
+        // dialog pumps the message loop, letting TE process that event mid-macro, which resets
+
+        // TE's undo manager and causes "EndBatch() called before BeginBatch()" when the macro
+
+        // ends. Writing to the output pane avoids the nested message loop.
+
+        if (run != null && run.Started)
+
+        {
+
+            Output("Power BI Desktop reloaded the report canvas from disk.");
+
+        }
+
+        else
+
+        {
+
+            Output("Changes saved to disk. Reopen the report in Power BI Desktop to see them " +
+
+                "(the 'pbir' CLI was not found for automatic reload; install it with 'uv tool install pbir-cli').");
+
+        }
+
+    }
+
+
+
 
 
     public static string ReplacePlaceholders(string pageContents, Dictionary<string, string> placeholders)
@@ -1817,6 +2841,8 @@ public static class Rx
             [JsonProperty("field")] public VisualDto.Field Field { get; set; }
             [JsonProperty("queryRef")] public string QueryRef { get; set; }
             [JsonProperty("nativeQueryRef")] public string NativeQueryRef { get; set; }
+
+            [JsonProperty("displayName")] public string DisplayName { get; set; }
             [JsonProperty("active")] public bool? Active { get; set; }
             [JsonProperty("hidden")] public bool? Hidden { get; set; }
             [JsonExtensionData]
@@ -2958,21 +3984,6 @@ public static class Rx
                 }
             }
 
-            //if (Content.FilterConfig != null)
-            //{
-            //    var filterConfigString = Content.FilterConfig.ToString();
-            //    string table = isMeasure ? newField.Measure.Expression.SourceRef.Entity : newField.Column.Expression.SourceRef.Entity;
-            //    string prop = isMeasure ? newField.Measure.Property : newField.Column.Property;
-
-            //    string oldPattern = oldFieldKey;
-            //    string newPattern = $"'{table}'[{prop}]";
-
-            //    if (filterConfigString.Contains(oldPattern))
-            //    {
-            //        Content.FilterConfig = filterConfigString.Replace(oldPattern, newPattern);
-            //        wasModified = true;
-            //    }
-            //}
             if (wasModified && modifiedSet != null)
                 modifiedSet.Add(this);
         }

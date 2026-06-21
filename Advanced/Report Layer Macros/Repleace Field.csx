@@ -1,15 +1,18 @@
+#r "System.Drawing"
 #r "Microsoft.VisualBasic"
+using System.Windows.Forms;
+using Microsoft.VisualBasic;
+using System.IO;
+using Newtonsoft.Json.Linq;
+
+// 2026-06-21 / B.Agullo: now updates the report directly in Power BI Desktop without reopening it.
 //2025-05-25/B.Agullo
 //provided a definition.pbir file, this script allows the user to replace a measure in all visuals that use it with another measure.
 //when executing the script you must be connected to the semantic model to which the report is connected to or one that is identical. 
 //see https://www.esbrina-ba.com/pbir-scripts-to-replace-field-and-open-visual-json-files/ for reference on how to use it
-using System.Windows.Forms;
-
-
-
-using Microsoft.VisualBasic;
-using System.IO;
-using Newtonsoft.Json.Linq;
+#if TE3
+ScriptHelper.WaitFormVisible = false;
+#endif
 ReportExtended report = Rx.InitReport();
 if (report == null) return;
 var modifiedVisuals = new HashSet<VisualExtended>();
@@ -73,73 +76,525 @@ foreach (var visual in modifiedVisuals)
     Rx.SaveVisual(visual);
 }
 Output($"{modifiedVisuals.Count} visuals were modified.");
+Rx.UpdateDesktop(report);
 
 public static class Fx
 {
-    public static Table CreateCalcTable(Model model, string tableName, string tableExpression)
+    public static Measure GetSelectedMeasure(IEnumerable<Measure> measures, string label = "Select Measure")
+    {
+        Measure selectedMeasure = null;
+        if (measures.Count() == 1)
+        {
+            selectedMeasure = measures.First();
+        }
+        else
+        {
+            selectedMeasure = SelectMeasure(label: label);
+            if (selectedMeasure == null)
+            {
+                Info("No measure selected.");
+                return null;
+            }
+        }
+        return selectedMeasure;
+    }
+    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
+    {
+        Table selectedTable = null;
+        if (tables.Count() == 1)
+        {
+            selectedTable = tables.First();
+        }
+        else if (tables.Count() > 1)
+        {
+            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
+            if (selectedTable == null)
+            {
+                Info("No table selected.");
+                return null;
+            }
+        } else             {
+            if (createMeasureTableIfNoneSelected)
+            {
+                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
+            } 
+            else
+            {
+                selectedTable = SelectTable(tables: tables, label: label);
+                if (selectedTable == null)
+                {
+                    Info("No table selected.");
+                    return null;
+                }
+            }
+        }
+        return selectedTable;
+    }
+    public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
+    {
+        if (!model.Tables.OfType<CalculationGroupTable>().Any())
+        {
+            Info("No calculation groups found in the model.");
+            return null;
+        }
+        // Create a TreeView form
+        Form form = new Form
+        {
+            Text = label,
+            StartPosition = FormStartPosition.CenterScreen,
+            Width = 600,
+            Height = 500,
+            Padding = new Padding(10)
+        };
+        TreeView treeView = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            CheckBoxes = true
+        };
+        // Track selections per calculation group
+        var selectionMap = new Dictionary<string, TreeNode>();
+        // Populate tree with calculation groups and items
+        foreach (var calcGroup in model.Tables.OfType<CalculationGroupTable>())
+        {
+            TreeNode groupNode = new TreeNode(calcGroup.Name)
+            {
+                Tag = calcGroup
+            };
+            foreach (var calcItem in calcGroup.CalculationItems)
+            {
+                TreeNode itemNode = new TreeNode(calcItem.Name)
+                {
+                    Tag = calcItem
+                };
+                groupNode.Nodes.Add(itemNode);
+            }
+            treeView.Nodes.Add(groupNode);
+            groupNode.Expand();
+        }
+        // Handle BeforeCheck to prevent checking group nodes
+        treeView.BeforeCheck += (sender, e) =>
+        {
+            // Prevent checking calculation group nodes (only allow calculation items)
+            if (e.Node.Tag is CalculationGroupTable)
+            {
+                e.Cancel = true;
+            }
+        };
+        // Handle node check events to enforce "one per group" rule
+        treeView.AfterCheck += (sender, e) =>
+        {
+            if (e.Node.Tag is CalculationItem)
+            {
+                var calcItem = (CalculationItem)e.Node.Tag;
+                string groupName = calcItem.CalculationGroupTable.Name;
+                if (e.Node.Checked)
+                {
+                    // Uncheck any previously selected item in this group
+                    if (selectionMap.ContainsKey(groupName))
+                    {
+                        selectionMap[groupName].Checked = false;
+                    }
+                    selectionMap[groupName] = e.Node;
+                }
+                else
+                {
+                    // Remove from selection if unchecked
+                    if (selectionMap.ContainsKey(groupName) && selectionMap[groupName] == e.Node)
+                    {
+                        selectionMap.Remove(groupName);
+                    }
+                }
+            }
+        };
+        // Button panel
+        FlowLayoutPanel buttonPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(5)
+        };
+        Button okButton = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            Width = 80,
+            Height = 30
+        };
+        Button cancelButton = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Width = 80,
+            Height = 30
+        };
+        buttonPanel.Controls.Add(okButton);
+        buttonPanel.Controls.Add(cancelButton);
+        form.Controls.Add(treeView);
+        form.Controls.Add(buttonPanel);
+        // Show dialog
+        ResetWaitCursor();
+        DialogResult result = form.ShowDialog();
+        if (result == DialogResult.Cancel)
+        {
+            Info("Selection cancelled.");
+            return null;
+        }
+        // Build result dictionary: CalculationGroupName -> CalculationItemName
+        var selectedItems = new Dictionary<string, string>();
+        foreach (var kvp in selectionMap)
+        {
+            if (kvp.Value.Checked)
+            {
+                selectedItems[kvp.Key] = kvp.Value.Text;
+            }
+        }
+        return selectedItems;
+    }
+    public static void CheckCompatibilityVersion(Model model, int requiredVersion, string customMessage = "Compatibility level must be raised to {0} to run this script. Do you want raise the compatibility level?")
+    {
+        if (model.Database.CompatibilityLevel < requiredVersion)
+        {
+            if (Fx.IsAnswerYes(String.Format("The model compatibility level is below {0}. " + customMessage, requiredVersion)))
+            {
+                model.Database.CompatibilityLevel = requiredVersion;
+            }
+            else
+            {
+                Info("Operation cancelled.");
+                return;
+            }
+        }
+    }
+    public static Function CreateFunction(
+        Model model,
+        string name,
+        string expression,
+        out bool functionCreated,
+        string description = null,
+        string annotationLabel = null,
+        string annotationValue = null,
+        string outputType = null,
+        string nameTemplate = null,
+        string formatString = null,
+        string displayFolder = null,
+        string outputDestination = null)
+    {
+        Function function = null as Function;
+        functionCreated = false;
+        var matchingFunctions = model.Functions.Where(f => f.GetAnnotation(annotationLabel) == annotationValue);
+        if (matchingFunctions.Count() == 1)
+        {
+            return matchingFunctions.First();
+        }
+        else if (matchingFunctions.Count() == 0)
+        {
+            function = model.AddFunction(name);
+            function.Expression = expression;
+            function.Description = description;
+            functionCreated = true;
+        }
+        else
+        {
+            Error("More than one function found with annoation " + annotationLabel + " value " + annotationValue);
+            return null as Function;
+        }
+        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+        {
+            function.SetAnnotation(annotationLabel, annotationValue);
+        }
+        if (!string.IsNullOrEmpty(outputType))
+        {
+            function.SetAnnotation("outputType", outputType);
+        }
+        if (!string.IsNullOrEmpty(nameTemplate))
+        {
+            function.SetAnnotation("nameTemplate", nameTemplate);
+        }
+        if (!string.IsNullOrEmpty(formatString))
+        {
+            function.SetAnnotation("formatString", formatString);
+        }
+        if (!string.IsNullOrEmpty(displayFolder))
+        {
+            function.SetAnnotation("displayFolder", displayFolder);
+        }
+        if (!string.IsNullOrEmpty(outputDestination))
+        {
+            function.SetAnnotation("outputDestination", outputDestination);
+        }
+        return function;
+    }
+    public static Table CreateCalcTable(Model model, string tableName, string tableExpression = "FILTER({0},FALSE)")
     {
         return model.Tables.FirstOrDefault(t =>
                             string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase)) //case insensitive search
                             ?? model.AddCalculatedTable(tableName, tableExpression);
     }
+    public static Measure CreateMeasure(
+        Table table, 
+        string measureName, 
+        string measureExpression,
+        out bool measureCreated,
+        string formatString = null,
+        string displayFolder = null,
+        string description = null,
+        string annotationLabel = null, 
+        string annotationValue = null,
+        bool isHidden = false)
+    {
+        measureCreated = false;
+        IEnumerable<Measure> matchingMeasures = null as IEnumerable<Measure>;
+        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+        {
+            matchingMeasures = table.Measures.Where(m => m.GetAnnotation(annotationLabel) == annotationValue);
+        }
+        else
+        {
+            matchingMeasures = table.Measures.Where(m => m.Name == measureName);
+        }
+        if (matchingMeasures.Count() == 1)
+        {
+            return matchingMeasures.First();
+        }
+        else if (matchingMeasures.Count() == 0)
+        {
+            Measure measure = table.AddMeasure(measureName, measureExpression);
+            measure.Description = description;
+            measure.DisplayFolder = displayFolder;
+            measure.FormatString = formatString;
+            measureCreated = true;
+            if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
+            {
+                measure.SetAnnotation(annotationLabel, annotationValue);
+            }
+            measure.IsHidden = isHidden;
+            return measure;
+        }
+        else
+        {
+            Error("More than one measure found with annoation " + annotationLabel + " value " + annotationValue);
+            Output(matchingMeasures);
+            return null as Measure;
+        }
+    }
+    // In TE2 scripts run inside an "Hourglass" that sets Application.UseWaitCursor = true for the
+    // whole application, so dialog boxes show a busy cursor (TE3 solves this with WaitFormVisible).
+    // Turn the flag off and nudge Windows (WM_SETCURSOR) to refresh the cursor immediately,
+    // otherwise it only updates on the next mouse message. Call this before showing any dialog.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wp, IntPtr lp);
+    public static void ResetWaitCursor()
+    {
+        if (!Application.UseWaitCursor) return;
+        Application.UseWaitCursor = false;
+        Cursor.Current = Cursors.Default;
+        Form f = Form.ActiveForm;
+        if (f != null && f.Handle != IntPtr.Zero)
+            SendMessage(f.Handle, 0x20, f.Handle, (IntPtr)1); // WM_SETCURSOR
+    }
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
+        ResetWaitCursor();
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
+        if (response == null)
+        {
+            Error("No input provided.");
+            return null;
+        };
         return response;
     }
-    public static string ChooseString(IList<string> OptionList, string Label = "Choose item")
+    public static bool IsAnswerYes(string question, string title = "Please confirm")
     {
-        return ChooseStringInternal(OptionList, MultiSelect: false, Label:Label) as string;
+        ResetWaitCursor();
+        var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        return result == DialogResult.Yes;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string Label = "Choose item(s)")
+    public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "")
     {
-        return ChooseStringInternal(OptionList, MultiSelect:true, Label:Label) as List<string>;
+        var returnEmpty = (Values: new List<string>(), Type: (string)null);
+        if (prompt1.Contains("{0}"))
+            prompt1 = string.Format(prompt1, placeholderValue ?? "");
+        if(prompt2.Contains("{0}"))
+            prompt2 = string.Format(prompt2, placeholderValue ?? "");
+        if (selectionType == null)
+        {
+            IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "Scalar" };
+            selectionType = ChooseString(selectionTypeOptions, label: prompt1, customWidth: 600);
+        }
+        if (selectionType == null) return returnEmpty;
+        IList<string> selectedValues = new List<string>();
+        switch (selectionType)
+        {
+            case "Table":
+                selectedValues = SelectTableMultiple(model, label: prompt2);
+                break;
+            case "Column":
+                selectedValues = SelectColumnMultiple(model, label: prompt2);
+                break;
+            case "Measure":
+                selectedValues = SelectMeasureMultiple(model: model, label: prompt2);
+                break;
+            case "Scalar":
+                IList<string> scalarList = new List<string>();
+                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));
+                selectedValues = scalarList;
+                break;
+            default:
+                Error("Invalid selection type");
+                return returnEmpty;
+        }
+        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty; 
+        return (Values:selectedValues, Type:selectionType);
     }
-    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string Label = "Choose item(s)")
+    public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
+    {
+        return ChooseStringInternal(OptionList, MultiSelect: false, label: label, customWidth: customWidth, customHeight:customHeight) as string;
+    }
+    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 650, int customHeight = 550)
+    {
+        return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight) as List<string>;
+    }
+    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
     {
         Form form = new Form
         {
-            Text =Label,
-            Width = 400,
-            Height = 500,
+            Text =label,
             StartPosition = FormStartPosition.CenterScreen,
             Padding = new Padding(20)
+        };
+        // Keep track of selected items across filtering
+        HashSet<string> selectedItemsSet = new HashSet<string>();
+        bool isRestoringSelections = false;
+        // Search panel at the top
+        Panel searchPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 35,
+            Padding = new Padding(0, 0, 0, 5)  // Add 5px bottom padding for spacing
+        };
+        Label searchLabel = new System.Windows.Forms.Label
+        {
+            Text = "Search:",
+            AutoSize = true,
+            Location = new System.Drawing.Point(0, 8),
+            Width = 70
+        };
+        TextBox searchBox = new TextBox
+        {
+            Location = new System.Drawing.Point(75, 5),
+            Width = customWidth - 115,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right
+        };
+        searchPanel.Controls.Add(searchLabel);
+        searchPanel.Controls.Add(searchBox);
+        // ListBox panel in the middle
+        Panel listBoxPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 35, 0, 75)  // Top padding = searchPanel height, Bottom = buttonPanel height
         };
         ListBox listbox = new ListBox
         {
             Dock = DockStyle.Fill,
             SelectionMode = MultiSelect ? SelectionMode.MultiExtended : SelectionMode.One
         };
+        listBoxPanel.Controls.Add(listbox);
+        // Initial population
         listbox.Items.AddRange(OptionList.ToArray());
         if (!MultiSelect && OptionList.Count > 0)
             listbox.SelectedItem = OptionList[0];
+        // Track manual selection changes
+        listbox.SelectedIndexChanged += delegate
+        {
+            // Skip if we're programmatically restoring selections
+            if (isRestoringSelections) return;
+            // Get current items in listbox
+            HashSet<string> currentItems = new HashSet<string>();
+            foreach (object item in listbox.Items)
+            {
+                currentItems.Add(item.ToString());
+            }
+            // Remove only currently visible items that are NOT selected
+            foreach (string item in currentItems)
+            {
+                if (!listbox.SelectedItems.Cast<object>().Any(selected => selected.ToString() == item))
+                {
+                    selectedItemsSet.Remove(item);
+                }
+            }
+            // Add currently selected items
+            foreach (object item in listbox.SelectedItems)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
+        };
+        // Search/filter functionality
+        searchBox.TextChanged += delegate
+        {
+            string searchText = searchBox.Text;
+            // Filter the list
+            var filteredList = OptionList
+                .Where(item => item.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+            // Set flag to prevent SelectedIndexChanged from firing during restoration
+            isRestoringSelections = true;
+            // Repopulate listbox
+            listbox.Items.Clear();
+            listbox.Items.AddRange(filteredList.ToArray());
+            // Restore previous selections
+            for (int i = 0; i < listbox.Items.Count; i++)
+            {
+                if (selectedItemsSet.Contains(listbox.Items[i].ToString()))
+                {
+                    listbox.SetSelected(i, true);
+                }
+            }
+            // Re-enable selection tracking
+            isRestoringSelections = false;
+        };
         FlowLayoutPanel buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 40,
+            Height = 75,
             FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(10)
+            Padding = new Padding(10, 5, 10, 10)  // Add top padding for spacing from listbox
         };
-        Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect };
-        Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect };
-        Button okButton = new Button { Text = "OK", DialogResult = DialogResult.OK };
-        Button cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel };
+        Button selectAllButton = new Button { Text = "Select All", Visible = MultiSelect , Height = 50, Width = 150};
+        Button selectNoneButton = new Button { Text = "Select None", Visible = MultiSelect, Height = 50, Width = 150 };
+        Button okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Height = 50, Width = 100 };
+        Button cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Height = 50, Width = 100 };
         selectAllButton.Click += delegate
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, true);
+            // Update tracking set with all currently visible items
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Add(item.ToString());
+            }
         };
         selectNoneButton.Click += delegate
         {
             for (int i = 0; i < listbox.Items.Count; i++)
                 listbox.SetSelected(i, false);
+            // Remove all currently visible items from tracking set
+            foreach (object item in listbox.Items)
+            {
+                selectedItemsSet.Remove(item.ToString());
+            }
         };
         buttonPanel.Controls.Add(selectAllButton);
         buttonPanel.Controls.Add(selectNoneButton);
         buttonPanel.Controls.Add(okButton);
         buttonPanel.Controls.Add(cancelButton);
-        form.Controls.Add(listbox);
-        form.Controls.Add(buttonPanel);
+        // Add controls in proper order for Dock: Bottom first, Top second, Fill last
+        form.Controls.Add(buttonPanel);    // Bottom - add first
+        form.Controls.Add(searchPanel);    // Top - add second
+        form.Controls.Add(listBoxPanel);   // Fill - add last
+        form.Width = customWidth;
+        form.Height = customHeight;
+        ResetWaitCursor();
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
@@ -171,6 +626,116 @@ public static class Fx
         }
         return dateTables;
     }
+    public static Table GetDateTable(Model model, string prompt = "Select Date Table")
+    {
+        var dateTables = GetDateTables(model);
+        if (dateTables == null) {
+            Table t = SelectTable(model.Tables, label: prompt);
+            if(t == null)
+            {
+                Error("No table selected");
+                return null;
+            }
+            if (IsAnswerYes(String.Format("Mark {0} as date table?",t.DaxObjectFullName)))
+            {
+                t.DataCategory = "Time";
+                var dateColumns = t.Columns
+                    .Where(c => c.DataType == DataType.DateTime)
+                    .ToList();
+                if(dateColumns.Count == 0)
+                {
+                    Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column",t.Name));
+                    return null;
+                }
+                var keyColumn = SelectColumn(dateColumns, preselect:dateColumns.First(), label: "Select Date Column to be used as key column");
+                if(keyColumn == null)
+                {
+                    Error("No key column selected");
+                    return null;
+                }
+                keyColumn.IsKey = true;
+            }
+            return t;
+        };
+        if (dateTables.Count() == 1)
+            return dateTables.First();
+        Table dateTable = SelectTable(dateTables, label: prompt);
+        if(dateTable == null)
+        {
+            Error("No table selected");
+            return null;
+        }
+        return dateTable;
+    }
+    public static Column GetDateColumn(Table dateTable, string prompt = "Select Date Column")
+    {
+        var dateColumns = dateTable.Columns
+            .Where(c => c.DataType == DataType.DateTime)
+            .ToList();
+        if(dateColumns.Count == 0)
+        {
+            Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column", dateTable.Name));
+            return null;
+        }
+        if(dateColumns.Any(c => c.IsKey))
+        {
+            return dateColumns.First(c => c.IsKey);
+        }
+        Column dateColumn = null;
+        if (dateColumns.Count() == 1)
+        {
+            dateColumn = dateColumns.First();
+        }
+        else
+        {
+            dateColumn = SelectColumn(dateColumns, label: prompt);
+            if (dateColumn == null)
+            {
+                Error("No column selected");
+                return null;
+            }
+        }
+        return dateColumn;
+    }
+    public static IEnumerable<Table> GetFactTables(Model model)
+    {
+        IEnumerable<Table> factTables = model.Tables.Where(
+            x => model.Relationships.Where(r => r.ToTable == x)
+                    .All(r => r.ToCardinality == RelationshipEndCardinality.Many)
+                && model.Relationships.Where(r => r.FromTable == x)
+                    .All(r => r.FromCardinality == RelationshipEndCardinality.Many)
+                && model.Relationships.Where(r => r.ToTable == x || r.FromTable == x).Any()); // at least one relationship
+        if (!factTables.Any())
+        {
+            Error("No fact table detected in the model. Please check that the model contains relationships");
+            return null;
+        }
+        return factTables;
+    }
+    public static Table GetFactTable(Model model, string prompt = "Select Fact Table")
+    {
+        Table factTable = null;
+        var factTables = GetFactTables(model);
+        if (factTables == null)
+        {
+           factTable = SelectTable(model.Tables, label: "This does not look like a star schema. Choose your fact table manually");
+            if (factTable == null)
+            {
+                Error("No table selected");
+                return null;
+            }
+            return factTable;
+        };
+        if (factTables.Count() == 1)
+            return factTables.First();
+        factTable = SelectTable(factTables, label: prompt);
+        if (factTable == null)
+        {
+            Error("No table selected");
+            return null;
+        }
+        return factTable;
+    }
     public static Table GetTablesWithAnnotation(IEnumerable<Table> tables, string annotationLabel, string annotationValue)
     {
         Func<Table, bool> lambda = t => t.GetAnnotation(annotationLabel) == annotationValue;
@@ -187,37 +752,1153 @@ public static class Fx
         var filteredColumns = columns.Where(c => lambda(c));
         return filteredColumns.Any() || returnAllIfNoneFound ? filteredColumns : null;
     }
+    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
+    {
+        measures ??= model.AllMeasures;
+        // Create display strings with format: TableName\DisplayFolder\[MeasureName]
+        var measureDisplayMap = new Dictionary<string, string>();
+        var displayList = new List<string>();
+        foreach (var measure in measures.OrderBy(m => m.Table.Name).ThenBy(m => m.DisplayFolder).ThenBy(m => m.Name))
+        {
+            string displayString;
+            if (string.IsNullOrEmpty(measure.DisplayFolder))
+            {
+                displayString = String.Format("{0}\\[{1}]", measure.Table.Name, measure.Name);
+            }
+            else
+            {
+                displayString = String.Format("{0}\\{1}\\[{2}]", measure.Table.Name, measure.DisplayFolder, measure.Name);
+            }
+            measureDisplayMap[displayString] = measure.DaxObjectFullName;
+            displayList.Add(displayString);
+        }
+        // Show the display list to user
+        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label);
+        if (selectedDisplayStrings == null || selectedDisplayStrings.Count == 0)
+            return new List<string>();
+        // Map back to DaxObjectFullName
+        var selectedMeasureNames = selectedDisplayStrings
+            .Select(display => measureDisplayMap[display])
+            .ToList();
+        return selectedMeasureNames;
+    }
+    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
+    {
+        columns ??= model.AllColumns;
+        IList<string> columnNames = columns.Select(m => m.DaxObjectFullName).ToList();
+        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label);
+        return selectedColumnNames;
+    }
+    public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400)
+    {
+        Tables ??= model.Tables;
+        IList<string> TableNames = Tables.Select(m => m.DaxObjectFullName).ToList();
+        IList<string> selectedTableNames = ChooseStringMultiple(TableNames, label: label, customWidth: customWidth);
+        return selectedTableNames;
+    }
 }
 
 public static class Rx
 
 {
 
+
+
+
+
     
 
+    
 
-
-
-
-    public static ReportExtended InitReport()
+    public static VisualExtended DuplicateVisual(VisualExtended visualExtended)
 
     {
 
-        // Get the base path from the user  
+        // Generate a clean 16-character name from a GUID (no dashes or slashes)
 
-        string basePath = Rx.GetPbirFilePath();
+        string newVisualName = Guid.NewGuid().ToString("N").Substring(0, 16);
 
-        if (basePath == null)
+        string sourceFolder = Path.GetDirectoryName(visualExtended.VisualFilePath);
+
+        string targetFolder = Path.Combine(Path.GetDirectoryName(sourceFolder), newVisualName);
+
+        if (Directory.Exists(targetFolder))
 
         {
 
-            Error("Operation canceled by the user.");
+            Error(string.Format("Folder already exists: {0}", targetFolder));
 
             return null;
 
         }
 
+        Directory.CreateDirectory(targetFolder);
 
+
+
+        // Deep clone the VisualDto.Root object
+
+        string originalJson = JsonConvert.SerializeObject(visualExtended.Content, Newtonsoft.Json.Formatting.Indented);
+
+        VisualDto.Root clonedContent = 
+
+            JsonConvert.DeserializeObject<VisualDto.Root>(
+
+                originalJson, 
+
+                new JsonSerializerSettings {
+
+                    DefaultValueHandling = DefaultValueHandling.Ignore,
+
+                    NullValueHandling = NullValueHandling.Ignore
+
+
+
+                });
+
+
+
+        // Update the name property if it exists
+
+        if (clonedContent != null && clonedContent.Name != null)
+
+        {
+
+            clonedContent.Name = newVisualName;
+
+        }
+
+
+
+        // Set the new file path
+
+        string newVisualFilePath = Path.Combine(targetFolder, "visual.json");
+
+
+
+        // Create the new VisualExtended object
+
+        VisualExtended newVisual = new VisualExtended
+
+        {
+
+            Content = clonedContent,
+
+            VisualFilePath = newVisualFilePath
+
+        };
+
+
+
+        return newVisual;
+
+    }
+
+
+
+    public static VisualExtended GroupVisuals(List<VisualExtended> visualsToGroup, string groupName = null, string groupDisplayName = null)
+
+    {
+
+        if (visualsToGroup == null || visualsToGroup.Count == 0)
+
+        {
+
+            Error("No visuals to group.");
+
+            return null;
+
+        }
+
+        // Generate a clean 16-character name from a GUID (no dashes or slashes) if no group name is provided
+
+        if (string.IsNullOrEmpty(groupName))
+
+        {
+
+            groupName = Guid.NewGuid().ToString("N").Substring(0, 16);
+
+        }
+
+        if (string.IsNullOrEmpty(groupDisplayName))
+
+        {
+
+            groupDisplayName = groupName;
+
+        }
+
+
+
+        // Find minimum X and Y
+
+        double minX = visualsToGroup.Min(v => v.Content.Position != null ? (double)v.Content.Position.X : 0);
+
+        double minY = visualsToGroup.Min(v => v.Content.Position != null ? (double)v.Content.Position.Y : 0);
+
+
+
+       //Info("minX:" + minX.ToString() + ", minY: " + minY.ToString());
+
+
+
+        // Calculate width and height
+
+        double groupWidth = 0;
+
+        double groupHeight = 0;
+
+        foreach (var v in visualsToGroup)
+
+        {
+
+            if (v.Content != null && v.Content.Position != null)
+
+            {
+
+                double visualWidth = v.Content.Position != null ? (double)v.Content.Position.Width : 0;
+
+                double visualHeight = v.Content.Position != null ? (double)v.Content.Position.Height : 0;
+
+                double xOffset = (double)v.Content.Position.X - (double)minX;
+
+                double yOffset = (double)v.Content.Position.Y - (double)minY;
+
+                double totalWidth = xOffset + visualWidth;
+
+                double totalHeight = yOffset + visualHeight;
+
+                if (totalWidth > groupWidth) groupWidth = totalWidth;
+
+                if (totalHeight > groupHeight) groupHeight = totalHeight;
+
+            }
+
+        }
+
+
+
+        // Create the group visual content
+
+        var groupContent = new VisualDto.Root
+
+        {
+
+            Schema = visualsToGroup.FirstOrDefault().Content.Schema,
+
+            Name = groupName,
+
+            Position = new VisualDto.Position
+
+            {
+
+                X = minX,
+
+                Y = minY,
+
+                Width = groupWidth,
+
+                Height = groupHeight
+
+            },
+
+            VisualGroup = new VisualDto.VisualGroup
+
+            {
+
+                DisplayName = groupDisplayName,
+
+                GroupMode = "ScaleMode"
+
+            }
+
+        };
+
+
+
+        // Set VisualFilePath for the group visual
+
+        // Use the VisualFilePath of the first visual as a template
+
+        string groupVisualFilePath = null;
+
+        var firstVisual = visualsToGroup.FirstOrDefault(v => !string.IsNullOrEmpty(v.VisualFilePath));
+
+        if (firstVisual != null && !string.IsNullOrEmpty(firstVisual.VisualFilePath))
+
+        {
+
+            string originalPath = firstVisual.VisualFilePath;
+
+            string parentDir = Path.GetDirectoryName(Path.GetDirectoryName(originalPath)); // up to 'visuals'
+
+            if (!string.IsNullOrEmpty(parentDir))
+
+            {
+
+                string groupFolder = Path.Combine(parentDir, groupName);
+
+                groupVisualFilePath = Path.Combine(groupFolder, "visual.json");
+
+            }
+
+        }
+
+
+
+        // Create the new VisualExtended for the group
+
+        var groupVisual = new VisualExtended
+
+        {
+
+            Content = groupContent,
+
+            VisualFilePath = groupVisualFilePath // Set as described
+
+        };
+
+
+
+        // Update grouped visuals: set parentGroupName and adjust X/Y
+
+        foreach (var v in visualsToGroup)
+
+        {
+
+            
+
+            if (v.Content == null) continue;
+
+            v.Content.ParentGroupName = groupName;
+
+
+
+            if (v.Content.Position != null)
+
+            {
+
+                v.Content.Position.X = v.Content.Position.X - minX + 0;
+
+                v.Content.Position.Y = v.Content.Position.Y - minY + 0;
+
+            }
+
+        }
+
+
+
+        return groupVisual;
+
+    }
+
+
+
+    
+
+
+
+    private static readonly string RecentPathsFile = Path.Combine(
+
+    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+
+    "Tabular Editor Macro Settings", "recentPbirPaths.json");
+
+
+
+    public static string GetPbirFilePathWithHistory(string label = "Select definition.pbir file")
+
+    {
+
+        // Detect reports currently open in Power BI Desktop (PBIR/PBIP format, via pbir CLI)
+
+        PbirDesktopStatus pbirStatus;
+
+        string pbirMessage;
+
+        List<string> openReports = GetOpenPbirReportPaths(out pbirStatus, out pbirMessage);
+
+
+
+        // Inform the user when pbir is missing or the Desktop preview feature is off
+
+        if (!string.IsNullOrEmpty(pbirMessage))
+
+        {
+
+            Info(pbirMessage);
+
+        }
+
+
+
+        // Load recent paths
+
+        List<string> recentPaths = LoadRecentPbirPaths();
+
+
+
+        // Filter out non-existing files
+
+        recentPaths = recentPaths.Where(File.Exists).ToList();
+
+
+
+        // If exactly one report is open in Desktop, use it directly (skip manual selection)
+
+        if (openReports.Count == 1)
+
+        {
+
+            string autoPath = openReports[0];
+
+            UpdateRecentPbirPaths(autoPath, recentPaths);
+
+            return autoPath;
+
+        }
+
+
+
+        // More than one PBIP report is open => the right target is ambiguous. Warn the user
+
+        // so they consciously pick the one matching the model they are working on.
+
+        if (openReports.Count > 1)
+
+        {
+
+            Info(MultipleInstancesMessage(openReports.Count));
+
+        }
+
+
+
+        // Present options to the user: currently-open reports first (clearly marked),
+
+        // then recent paths, then browse. Several Desktop instances => several open reports.
+
+        const string openPrefix = "\u25CF [Open in Power BI Desktop]  ";
+
+        var displayToPath = new Dictionary<string, string>();
+
+        var options = new List<string>();
+
+
+
+        foreach (string p in openReports)
+
+        {
+
+            string display = openPrefix + p;
+
+            if (!displayToPath.ContainsKey(display))
+
+            {
+
+                displayToPath[display] = p;
+
+                options.Add(display);
+
+            }
+
+        }
+
+        foreach (string p in recentPaths)
+
+        {
+
+            if (!options.Contains(p) && !displayToPath.ContainsValue(p)) options.Add(p);
+
+        }
+
+        options.Add("Browse for new file...");
+
+
+
+        string selected = Fx.ChooseString(options,label:label, customWidth:600, customHeight:300);
+
+
+
+        if (selected == null) return null;
+
+
+
+        string chosenPath = null;
+
+        if (selected == "Browse for new file..." )
+
+        {
+
+            chosenPath = GetPbirFilePath(label);
+
+        }
+
+        else if (displayToPath.ContainsKey(selected))
+
+        {
+
+            chosenPath = displayToPath[selected];
+
+        }
+
+        else
+
+        {
+
+            chosenPath = selected;
+
+        }
+
+
+
+        if (!string.IsNullOrEmpty(chosenPath))
+
+        {
+
+            // Update recent paths
+
+            UpdateRecentPbirPaths(chosenPath, recentPaths);
+
+        }
+
+
+
+        return chosenPath;
+
+    }
+
+
+
+    private static List<string> LoadRecentPbirPaths()
+
+    {
+
+        try
+
+        {
+
+            if (File.Exists(RecentPathsFile))
+
+            {
+
+                string json = File.ReadAllText(RecentPathsFile);
+
+                return JsonConvert.DeserializeObject<List<string>>(json) ?? new List<string>();
+
+            }
+
+        }
+
+        catch { }
+
+        return new List<string>();
+
+    }
+
+
+
+    private static void UpdateRecentPbirPaths(string newPath, List<string> recentPaths)
+
+    {
+
+        // Remove if already exists, insert at top
+
+        recentPaths.RemoveAll(p => string.Equals(p, newPath, StringComparison.OrdinalIgnoreCase));
+
+        recentPaths.Insert(0, newPath);
+
+
+
+        // Keep only the latest 10
+
+        while (recentPaths.Count > 10)
+
+            recentPaths.RemoveAt(recentPaths.Count - 1);
+
+
+
+        // Ensure directory exists
+
+        Directory.CreateDirectory(Path.GetDirectoryName(RecentPathsFile));
+
+        File.WriteAllText(RecentPathsFile, JsonConvert.SerializeObject(recentPaths, Newtonsoft.Json.Formatting.Indented));
+
+    }
+
+
+
+    // Outcome of probing Power BI Desktop through the pbir CLI.
+
+    public enum PbirDesktopStatus
+
+    {
+
+        Ready,           // pbir ran and the local API responded (feature enabled)
+
+        NotInstalled,    // the pbir executable could not be found
+
+        FeatureDisabled, // pbir ran but the Desktop local-API preview feature is off / unavailable
+
+        ThickReportOnly, // pbir ran but the only open report(s) are thick (.pbix), not PBIR
+
+        Error            // any other failure (could not read or parse the response)
+
+    }
+
+
+
+    // Captures the result of launching an external process.
+
+    private sealed class PbirProcResult
+
+    {
+
+        public bool Started;   // false => executable not found / could not start
+
+        public string StdOut;
+
+        public string StdErr;
+
+    }
+
+
+
+    // Returns the definition.pbir path(s) of the report(s) currently open in Power BI Desktop.
+
+    // Uses the 'pbir' CLI (https://github.com/Kurt-Buhler/pbir). Returns an empty list if the
+
+    // CLI is unavailable, the Desktop preview feature is off, no Desktop instance is open, or
+
+    // only thick (.pbix) reports are open.
+
+    public static List<string> GetOpenPbirReportPaths()
+
+    {
+
+        PbirDesktopStatus status;
+
+        string message;
+
+        return GetOpenPbirReportPaths(out status, out message);
+
+    }
+
+
+
+    // Overload that also reports why detection succeeded or failed via 'status' and a
+
+    // user-facing 'message' (null when no message is needed, e.g. detection worked).
+
+    public static List<string> GetOpenPbirReportPaths(out PbirDesktopStatus status, out string message)
+
+    {
+
+        var result = new List<string>();
+
+        status = PbirDesktopStatus.Error;
+
+        message = null;
+
+
+
+        // 1) Check that the pbir CLI is installed
+
+        PbirProcResult run = RunPbir("desktop list --json");
+
+        if (run == null || !run.Started)
+
+        {
+
+            status = PbirDesktopStatus.NotInstalled;
+
+            message =
+
+                "Auto-detection of the open report is unavailable because the 'pbir' CLI was not found.\n\n" +
+
+                "Install it with:  uv tool install pbir-cli\n\n" +
+
+                "Falling back to manual selection.";
+
+            return result;
+
+        }
+
+
+
+        // 2) Check that Power BI Desktop's local API responded (preview feature enabled)
+
+        string output = run.StdOut;
+
+        if (!LooksLikeJson(output))
+
+        {
+
+            string combined = ((output ?? "") + " " + (run.StdErr ?? "")).ToLowerInvariant();
+
+            if (combined.Contains("secure local") || combined.Contains("external tool") ||
+
+                combined.Contains("preview") || combined.Contains("not enabled"))
+
+            {
+
+                status = PbirDesktopStatus.FeatureDisabled;
+
+                message = FeatureDisabledMessage();
+
+            }
+
+            else
+
+            {
+
+                status = PbirDesktopStatus.Error;
+
+                message = "Could not read Power BI Desktop status from pbir. Falling back to manual selection.";
+
+            }
+
+            return result;
+
+        }
+
+
+
+        try
+
+        {
+
+            var root = Newtonsoft.Json.Linq.JObject.Parse(output);
+
+            string apiStatus = (string)root["status"];
+
+
+
+            if (!string.IsNullOrEmpty(apiStatus) &&
+
+                !apiStatus.Equals("ready", StringComparison.OrdinalIgnoreCase))
+
+            {
+
+                status = PbirDesktopStatus.FeatureDisabled;
+
+                message = FeatureDisabledMessage();
+
+                return result;
+
+            }
+
+
+
+            status = PbirDesktopStatus.Ready;
+
+
+
+            var instances = root["instances"] as Newtonsoft.Json.Linq.JArray;
+
+            if (instances != null)
+
+            {
+
+                foreach (var inst in instances)
+
+                {
+
+                    string reportDir = (string)inst["reportDir"];
+
+                    string currentFilePath = (string)inst["currentFilePath"];
+
+                    string pbir = DerivePbirPath(reportDir, currentFilePath);
+
+                    if (pbir != null && !result.Contains(pbir)) result.Add(pbir);
+
+                }
+
+            }
+
+
+
+            // pbir's 'desktop list' only surfaces PBIP reports; thick (.pbix) reports never
+
+            // appear there. Detect them by comparing the number of open Power BI Desktop
+
+            // report windows against the number of PBIP reports pbir reported.
+
+            int openWindowCount = CountOpenDesktopReportWindows();
+
+            int thickCount = openWindowCount - result.Count;
+
+            if (thickCount < 0) thickCount = 0;
+
+
+
+            if (result.Count == 0 && thickCount > 0)
+
+            {
+
+                // Only thick (.pbix) report(s) are open - none can be used
+
+                status = PbirDesktopStatus.ThickReportOnly;
+
+                message = ThickReportMessage();
+
+            }
+
+            else if (result.Count > 0 && thickCount > 0)
+
+            {
+
+                // A mix of PBIR and thick (.pbix) reports is open - warn that .pbix are ignored
+
+                message = MixedReportsMessage(thickCount);
+
+            }
+
+        }
+
+        catch
+
+        {
+
+            status = PbirDesktopStatus.Error;
+
+            message = "Could not parse Power BI Desktop status from pbir. Falling back to manual selection.";
+
+        }
+
+
+
+        return result;
+
+    }
+
+
+
+    private static string FeatureDisabledMessage()
+
+    {
+
+        return
+
+            "Auto-detection of the open report is unavailable because Power BI Desktop's local API did not respond.\n\n" +
+
+            "Please make sure that:\n" +
+
+            "  1. Power BI Desktop is running with the report open, and\n" +
+
+            "  2. The preview feature is enabled:\n" +
+
+            "       File > Options and settings > Options > Preview features >\n" +
+
+            "       'Enable external tool access to Power BI Desktop through secure local APIs'\n\n" +
+
+            "Falling back to manual selection.";
+
+    }
+
+
+
+    private static string ThickReportMessage()
+
+    {
+
+        return
+
+            "The report currently open in Power BI Desktop is a thick report (.pbix), " +
+
+            "so it cannot be auto-detected or edited by the report-layer scripts.\n\n" +
+
+            "These scripts require the PBIR (enhanced report format) on disk. To use them:\n" +
+
+            "  1. In Power BI Desktop: File > Save as > Power BI project (.pbip), and\n" +
+
+            "  2. Enable PBIR under File > Options > Preview features > 'Store reports using enhanced metadata format (PBIR)'.\n\n" +
+
+            "Falling back to manual selection.";
+
+    }
+
+
+
+    private static string MixedReportsMessage(int thickCount)
+
+    {
+
+        string plural = thickCount == 1 ? "report is" : "reports are";
+
+        return String.Format(
+
+            "Note: {0} thick (.pbix) {1} also open in Power BI Desktop.\n\n" +
+
+            "Thick reports cannot be edited by the report-layer scripts, so only the " +
+
+            "PBIR (.pbip) report(s) are being considered.",
+
+            thickCount, plural);
+
+    }
+
+
+
+    private static string MultipleInstancesMessage(int openCount)
+
+    {
+
+        return String.Format(
+
+            "Warning: {0} Power BI Desktop reports (PBIP) are currently open.\n\n" +
+
+            "Auto-detection cannot tell which one matches the model you are working on, " +
+
+            "so please pick the intended report from the list. Reports currently open in " +
+
+            "Power BI Desktop are marked with a bullet at the top.",
+
+            openCount);
+
+    }
+
+
+
+    // Counts the report windows currently open in Power BI Desktop. Each open report is a
+
+    // PBIDesktop.exe process with a non-empty main window title; thick (.pbix) reports are
+
+    // counted here even though pbir's 'desktop list' does not report them.
+
+    private static int CountOpenDesktopReportWindows()
+
+    {
+
+        try
+
+        {
+
+            return System.Diagnostics.Process.GetProcessesByName("PBIDesktop")
+
+                .Select(p => { try { return p.MainWindowTitle; } catch { return null; } })
+
+                .Where(t => !string.IsNullOrEmpty(t))
+
+                .Distinct()
+
+                .Count();
+
+        }
+
+        catch
+
+        {
+
+            return 0;
+
+        }
+
+    }
+
+    // location (~/.local/bin/pbir.exe). Started=false means pbir is not installed.
+
+    private static PbirProcResult RunPbir(string arguments)
+
+    {
+
+        PbirProcResult r = RunCommandCapture("pbir", arguments);
+
+        if (r.Started) return r;
+
+
+
+        string fallback = Path.Combine(
+
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+
+            ".local", "bin", "pbir.exe");
+
+        if (File.Exists(fallback))
+
+        {
+
+            return RunCommandCapture(fallback, arguments);
+
+        }
+
+
+
+        return r; // Started = false
+
+    }
+
+
+
+    private static PbirProcResult RunCommandCapture(string fileName, string arguments)
+
+    {
+
+        var r = new PbirProcResult();
+
+        try
+
+        {
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+
+            {
+
+                FileName = fileName,
+
+                Arguments = arguments,
+
+                UseShellExecute = false,
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                CreateNoWindow = true
+
+            };
+
+
+
+            using (var proc = System.Diagnostics.Process.Start(psi))
+
+            {
+
+                r.Started = true;
+
+                r.StdOut = proc.StandardOutput.ReadToEnd();
+
+                r.StdErr = proc.StandardError.ReadToEnd();
+
+                proc.WaitForExit(15000);
+
+            }
+
+        }
+
+        catch (System.ComponentModel.Win32Exception)
+
+        {
+
+            r.Started = false; // executable not found
+
+        }
+
+        catch
+
+        {
+
+            r.Started = false;
+
+        }
+
+        return r;
+
+    }
+
+
+
+    private static bool LooksLikeJson(string s)
+
+    {
+
+        if (string.IsNullOrWhiteSpace(s)) return false;
+
+        string t = s.TrimStart();
+
+        return t.StartsWith("{") || t.StartsWith("[");
+
+    }
+
+
+
+    // Maps a pbir instance (reportDir / currentFilePath) to an existing definition.pbir path.
+
+    private static string DerivePbirPath(string reportDir, string currentFilePath)
+
+    {
+
+        // Case 1: pbir already resolved the report folder
+
+        if (!string.IsNullOrEmpty(reportDir))
+
+        {
+
+            if (reportDir.EndsWith(".pbir", StringComparison.OrdinalIgnoreCase) && File.Exists(reportDir))
+
+                return reportDir;
+
+
+
+            string candidate = Path.Combine(reportDir, "definition.pbir");
+
+            if (File.Exists(candidate)) return candidate;
+
+        }
+
+
+
+        // Case 2: derive the report folder from an open .pbip project
+
+        if (!string.IsNullOrEmpty(currentFilePath) &&
+
+            currentFilePath.EndsWith(".pbip", StringComparison.OrdinalIgnoreCase))
+
+        {
+
+            string dir = Path.GetDirectoryName(currentFilePath);
+
+            string name = Path.GetFileNameWithoutExtension(currentFilePath);
+
+
+
+            string candidate = Path.Combine(dir, name + ".Report", "definition.pbir");
+
+            if (File.Exists(candidate)) return candidate;
+
+
+
+            try
+
+            {
+
+                foreach (string reportFolder in Directory.GetDirectories(dir, "*.Report"))
+
+                {
+
+                    string c = Path.Combine(reportFolder, "definition.pbir");
+
+                    if (File.Exists(c)) return c;
+
+                }
+
+            }
+
+            catch { }
+
+        }
+
+
+
+        return null;
+
+    }
+
+
+
+
+
+    public static ReportExtended InitReport(string label = "Please select definition.pbir file of the target report")
+
+    {
+
+        // Get the base path from the user  
+
+        string basePath = Rx.GetPbirFilePathWithHistory(label:label);
+
+        if (basePath == null) return null; 
+
+        
 
         // Define the target path  
 
@@ -247,9 +1928,33 @@ public static class Rx
 
 
 
+        string pagesFilePath = Path.Combine(targetPath, "pages.json");
+
+        string pagesJsonContent = File.ReadAllText(pagesFilePath);
+
+        
+
+        if (string.IsNullOrEmpty(pagesJsonContent))
+
+        {
+
+            Error(String.Format("The file '{0}' is empty or does not exist.", pagesFilePath));
+
+            return null;
+
+        }
+
+
+
+        PagesDto pagesDto = JsonConvert.DeserializeObject<PagesDto>(pagesJsonContent);
+
+
+
         ReportExtended report = new ReportExtended();
 
-        report.PagesFilePath = Path.Combine(targetPath, "pages.json");
+        report.PagesFilePath = pagesFilePath;
+
+        report.PagesConfig = pagesDto;
 
 
 
@@ -280,6 +1985,10 @@ public static class Rx
                     pageExtended.Page = page;
 
                     pageExtended.PageFilePath = pageJsonPath;
+
+
+
+                    pageExtended.ParentReport = report;
 
 
 
@@ -329,7 +2038,7 @@ public static class Rx
 
                                 visualExtended.VisualFilePath = visualJsonPath;
 
-
+                                visualExtended.ParentPage = pageExtended; // Set parent page reference
 
                                 pageExtended.Visuals.Add(visualExtended);
 
@@ -379,27 +2088,149 @@ public static class Rx
 
 
 
-    public static VisualExtended SelectVisual(ReportExtended report)
+
+
+    public static VisualExtended SelectTableVisual(ReportExtended report)
+
+    {
+
+        List<string> visualTypes = new List<string>
+
+        {
+
+            "tableEx","pivotTable"
+
+        };
+
+        return SelectVisual(report: report, visualTypes);
+
+    }
+
+
+
+
+
+
+
+    public static VisualExtended SelectVisual(ReportExtended report, List<string> visualTypeList = null)
+
+    {
+
+        return SelectVisualInternal(report, Multiselect: false, visualTypeList:visualTypeList) as VisualExtended;
+
+    }
+
+
+
+    public static List<VisualExtended> SelectVisuals(ReportExtended report, List<string> visualTypeList = null)
+
+    {
+
+        return SelectVisualInternal(report, Multiselect: true, visualTypeList:visualTypeList) as List<VisualExtended>;
+
+    }
+
+
+
+    private static object SelectVisualInternal(ReportExtended report, bool Multiselect, List<string> visualTypeList = null)
 
     {
 
         // Step 1: Build selection list
 
-        var visualSelectionList = report.Pages
+        var visualSelectionList = 
 
-            .SelectMany(p => p.Visuals.Select(v => new
+            report.Pages
+
+            .SelectMany(p => p.Visuals
+
+                .Where(v =>
+
+                    v?.Content != null &&
+
+                    (
+
+                        // If visualTypeList is null, do not filter at all
+
+                        (visualTypeList == null) ||
+
+                        // If visualTypeList is provided and not empty, filter by it
+
+                        (visualTypeList.Count > 0 && v.Content.Visual != null && visualTypeList.Contains(v.Content?.Visual?.VisualType))
+
+                        // Otherwise, include all visuals and visual groups
+
+                        || (visualTypeList.Count == 0)
+
+                    )
+
+                )
+
+                .Select(v => new
+
+                    {
+
+                        // Use visual type for regular visuals, displayname for groups
+
+                        Display = string.Format(
+
+                            "{0} - {1} ({2}, {3})",
+
+                            p.Page.DisplayName,
+
+                            v?.Content?.Visual?.VisualType
+
+                                ?? v?.Content?.VisualGroup?.DisplayName,
+
+                            (int)(v.Content.Position?.X ?? 0),
+
+                            (int)(v.Content.Position?.Y ?? 0)
+
+                        ),
+
+                        Page = p,
+
+                        Visual = v
+
+                    }
+
+                )
+
+            )
+
+            .ToList();
+
+
+
+        if (visualSelectionList.Count == 0)
+
+        {
+
+            if (visualTypeList != null)
 
             {
 
-                Display = string.Format("{0} - {1} ({2}, {3})", p.Page.DisplayName, v.Content.Visual.VisualType, (int)v.Content.Position.X, (int)v.Content.Position.Y),
+                string types = string.Join(", ", visualTypeList);
 
-                Page = p,
+                Error(string.Format("No visual of type {0} were found", types));
 
-                Visual = v
 
-            }))
 
-            .ToList();
+            }else
+
+            {
+
+                Error("No visuals found in the report.");
+
+            }
+
+
+
+
+
+            return null;
+
+        }
 
 
 
@@ -407,43 +2238,187 @@ public static class Rx
 
         var options = visualSelectionList.Select(v => v.Display).ToList();
 
-        string selected = Fx.ChooseString(options);
 
 
-
-        if (string.IsNullOrEmpty(selected))
+        if (Multiselect)
 
         {
 
-            Info("You cancelled.");
+            // For multiselect, use ChooseStringMultiple
 
-            return null;
+            var multiSelelected = Fx.ChooseStringMultiple(options);
+
+            if (multiSelelected == null || multiSelelected.Count == 0)
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+            // Find all selected visuals
+
+            var selectedVisuals = visualSelectionList.Where(v => multiSelelected.Contains(v.Display)).Select(v => v.Visual).ToList();
+
+
+
+            return selectedVisuals;
 
         }
 
-
-
-        // Step 3: Find the selected visual
-
-        var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
-
-
-
-        if (selectedVisual == null)
+        else
 
         {
 
-            Error("Selected visual not found.");
+            string selected = Fx.ChooseString(options);
 
-            return null;
+
+
+            if (string.IsNullOrEmpty(selected))
+
+            {
+
+                Info("You cancelled.");
+
+                return null;
+
+            }
+
+
+
+            // Step 3: Find the selected visual
+
+            var selectedVisual = visualSelectionList.FirstOrDefault(v => v.Display == selected);
+
+
+
+            if (selectedVisual == null)
+
+            {
+
+                Error("Selected visual not found.");
+
+                return null;
+
+            }
+
+
+
+            return selectedVisual.Visual;
 
         }
-
-
-
-        return selectedVisual.Visual;
 
     }
+
+
+
+    public static PageExtended ReplicateFirstPageAsBlank(ReportExtended report, bool showMessages = false)
+
+    {
+
+        if (report.Pages == null || !report.Pages.Any())
+
+        {
+
+            Error("No pages found in the report.");
+
+            return null;
+
+        }
+
+
+
+        PageExtended firstPage = report.Pages[0];
+
+
+
+        // Generate a clean 16-character name from a GUID (no dashes or slashes)
+
+        string newPageName = Guid.NewGuid().ToString("N").Substring(0, 16);
+
+        string newPageDisplayName = firstPage.Page.DisplayName + " - Copy";
+
+
+
+        string sourceFolder = Path.GetDirectoryName(firstPage.PageFilePath);
+
+        string targetFolder = Path.Combine(Path.GetDirectoryName(sourceFolder), newPageName);
+
+        string visualsFolder = Path.Combine(targetFolder, "visuals");
+
+
+
+        if (Directory.Exists(targetFolder))
+
+        {
+
+            Error($"Folder already exists: {targetFolder}");
+
+            return null;
+
+        }
+
+
+
+        Directory.CreateDirectory(targetFolder);
+
+        Directory.CreateDirectory(visualsFolder);
+
+
+
+        var newPageDto = new PageDto
+
+        {
+
+            Name = newPageName,
+
+            DisplayName = newPageDisplayName,
+
+            DisplayOption = firstPage.Page.DisplayOption,
+
+            Height = firstPage.Page.Height,
+
+            Width = firstPage.Page.Width,
+
+            Schema = firstPage.Page.Schema
+
+        };
+
+
+
+        var newPage = new PageExtended
+
+        {
+
+            Page = newPageDto,
+
+            PageFilePath = Path.Combine(targetFolder, "page.json"),
+
+            Visuals = new List<VisualExtended>() // empty visuals
+
+        };
+
+
+
+        File.WriteAllText(newPage.PageFilePath, JsonConvert.SerializeObject(newPageDto, Newtonsoft.Json.Formatting.Indented));
+
+
+
+        report.Pages.Add(newPage);
+
+
+
+        if(showMessages) Info($"Created new blank page: {newPageName}");
+
+
+
+        return newPage; 
+
+    }
+
+
 
 
 
@@ -465,7 +2440,7 @@ public static class Rx
 
             {
 
-                DefaultValueHandling = DefaultValueHandling.Ignore,
+                //DefaultValueHandling = DefaultValueHandling.Ignore,
 
                 NullValueHandling = NullValueHandling.Ignore
 
@@ -475,7 +2450,79 @@ public static class Rx
 
         );
 
+        // Ensure the directory exists before saving
+
+        string visualFolder = Path.GetDirectoryName(visual.VisualFilePath);
+
+        if (!Directory.Exists(visualFolder))
+
+        {
+
+            Directory.CreateDirectory(visualFolder);
+
+        }
+
         File.WriteAllText(visual.VisualFilePath, newJson);
+
+    }
+
+
+
+    // Pushes the just-saved on-disk report changes into the open Power BI Desktop instance via the
+
+    // pbir CLI (https://github.com/Kurt-Buhler/pbir), so report-layer scripts reflect their edits on
+
+    // the canvas without a manual reopen. The report is assumed valid (it was already initialised).
+
+    public static void UpdateDesktop(ReportExtended report)
+
+    {
+
+        // PagesFilePath is <Name>.Report/definition/pages/pages.json; walk up three levels to reach
+
+        // the report folder (<Name>.Report), which is what 'pbir desktop reload' expects as its path.
+
+        string reportDir =
+
+            Path.GetDirectoryName(
+
+                Path.GetDirectoryName(
+
+                    Path.GetDirectoryName(report.PagesFilePath)));
+
+
+
+        PbirProcResult run = RunPbir(String.Format("desktop reload \"{0}\"", reportDir));
+
+
+
+        // Note: do NOT show a modal dialog (Info) here. Reloading the Power BI Desktop instance
+
+        // that Tabular Editor is live-connected to queues a "connection changed" event. A modal
+
+        // dialog pumps the message loop, letting TE process that event mid-macro, which resets
+
+        // TE's undo manager and causes "EndBatch() called before BeginBatch()" when the macro
+
+        // ends. Writing to the output pane avoids the nested message loop.
+
+        if (run != null && run.Started)
+
+        {
+
+            Output("Power BI Desktop reloaded the report canvas from disk.");
+
+        }
+
+        else
+
+        {
+
+            Output("Changes saved to disk. Reopen the report in Power BI Desktop to see them " +
+
+                "(the 'pbir' CLI was not found for automatic reload; install it with 'uv tool install pbir-cli').");
+
+        }
 
     }
 
@@ -519,7 +2566,7 @@ public static class Rx
 
 
 
-    public static String GetPbirFilePath()
+    public static String GetPbirFilePath(string label = "Please select definition.pbir file of the target report")
 
     {
 
@@ -531,7 +2578,7 @@ public static class Rx
 
         {
 
-            Title = "Please select definition.pbir file of the target report",
+            Title = label,
 
             // Set filter options and filter index.
 
@@ -573,6 +2620,8 @@ public static class Rx
 
    
 
+    
+
     public class PagesDto
     {
         [Newtonsoft.Json.JsonProperty("$schema")]
@@ -583,6 +2632,7 @@ public static class Rx
 
         [Newtonsoft.Json.JsonProperty("activePageName")]
         public string ActivePageName { get; set; }
+        
     }
 
 
@@ -617,10 +2667,76 @@ public static class Rx
             [JsonProperty("name")] public string Name { get; set; }
             [JsonProperty("position")] public Position Position { get; set; }
             [JsonProperty("visual")] public Visual Visual { get; set; }
-            [JsonProperty("visualContainerObjects")] public object VisualContainerObjects { get; set; }
-            [JsonProperty("filterConfig")] public object FilterConfig { get; set; }
+            
+
+            [JsonProperty("visualGroup")] public VisualGroup VisualGroup { get; set; }
+            [JsonProperty("parentGroupName")] public string ParentGroupName { get; set; }
+            [JsonProperty("filterConfig")] public FilterConfig FilterConfig { get; set; }
+            [JsonProperty("isHidden")] public bool IsHidden { get; set; }
+
+            [JsonExtensionData]
+            
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+
+        public class VisualContainerObjects
+        {
+            [JsonProperty("general")]
+            public List<VisualContainerObject> General { get; set; }
+
+            // Add other known properties as needed, e.g.:
+            [JsonProperty("title")]
+            public List<VisualContainerObject> Title { get; set; }
+
+            [JsonProperty("subTitle")]
+            public List<VisualContainerObject> SubTitle { get; set; }
+
+            // This will capture any additional properties not explicitly defined above
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualContainerObject
+        {
+            [JsonProperty("properties")]
+            public Dictionary<string, VisualContainerProperty> Properties { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualContainerProperty
+        {
+            [JsonProperty("expr")]
+            public VisualExpr Expr { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualExpr
+        {
+            [JsonProperty("Literal")]
+            public VisualLiteral Literal { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualLiteral
+        {
+            [JsonProperty("Value")]
+            public string Value { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualGroup
+        {
+            [JsonProperty("displayName")] public string DisplayName { get; set; }
+            [JsonProperty("groupMode")] public string GroupMode { get; set; }
         }
 
         public class Position
@@ -630,17 +2746,22 @@ public static class Rx
             [JsonProperty("z")] public int Z { get; set; }
             [JsonProperty("height")] public double Height { get; set; }
             [JsonProperty("width")] public double Width { get; set; }
-            [JsonProperty("tabOrder")] public int TabOrder { get; set; }
+
+            [JsonProperty("tabOrder", NullValueHandling = NullValueHandling.Ignore)]
+            public int? TabOrder { get; set; }
+
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
 
         public class Visual
         {
-            [JsonProperty("visualType", Order = 1)] public string VisualType { get; set; }
-            [JsonProperty("query", Order = 2)] public Query Query { get; set; }
-            [JsonProperty("objects", Order = 3)] public Objects Objects { get; set; }
-            [JsonProperty("drillFilterOtherVisuals", Order = 4)] public bool DrillFilterOtherVisuals { get; set; }
+            [JsonProperty("visualType")] public string VisualType { get; set; }
+            [JsonProperty("query")] public Query Query { get; set; }
+            [JsonProperty("objects")] public Objects Objects { get; set; }
+            [JsonProperty("visualContainerObjects")]
+            public VisualContainerObjects VisualContainerObjects { get; set; }
+            [JsonProperty("drillFilterOtherVisuals")] public bool DrillFilterOtherVisuals { get; set; }
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
@@ -653,7 +2774,7 @@ public static class Rx
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
 
-        public class QueryState
+        public class  QueryState
         {
             [JsonProperty("Rows", Order = 1)] public VisualDto.ProjectionsSet Rows { get; set; }
             [JsonProperty("Category", Order = 2)] public VisualDto.ProjectionsSet Category { get; set; }
@@ -672,6 +2793,22 @@ public static class Rx
         public class ProjectionsSet
         {
             [JsonProperty("projections")] public List<VisualDto.Projection> Projections { get; set; }
+            [JsonProperty("fieldParameters")] public List<VisualDto.FieldParameter> FieldParameters { get; set; }
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FieldParameter
+        {
+            [JsonProperty("parameterExpr")]
+            public Field ParameterExpr { get; set; }
+
+            [JsonProperty("index")]
+            public int Index { get; set; }
+
+            [JsonProperty("length")]
+            public int Length { get; set; }
+
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
@@ -681,6 +2818,8 @@ public static class Rx
             [JsonProperty("field")] public VisualDto.Field Field { get; set; }
             [JsonProperty("queryRef")] public string QueryRef { get; set; }
             [JsonProperty("nativeQueryRef")] public string NativeQueryRef { get; set; }
+
+            [JsonProperty("displayName")] public string DisplayName { get; set; }
             [JsonProperty("active")] public bool? Active { get; set; }
             [JsonProperty("hidden")] public bool? Hidden { get; set; }
             [JsonExtensionData]
@@ -782,14 +2921,14 @@ public static class Rx
             [JsonProperty("legend")] public List<VisualDto.ObjectProperties> Legend { get; set; }
             [JsonProperty("labels")] public List<VisualDto.ObjectProperties> Labels { get; set; }
             [JsonProperty("dataPoint")] public List<VisualDto.ObjectProperties> DataPoint { get; set; }
-
-
+            [JsonProperty("columnFormatting")] public List<VisualDto.ObjectProperties> ColumnFormatting { get; set; }
             [JsonProperty("referenceLabel")] public List<VisualDto.ObjectProperties> ReferenceLabel { get; set; }
             [JsonProperty("referenceLabelDetail")] public List<VisualDto.ObjectProperties> ReferenceLabelDetail { get; set; }
             [JsonProperty("referenceLabelValue")] public List<VisualDto.ObjectProperties> ReferenceLabelValue { get; set; }
 
             [JsonProperty("values")] public List<VisualDto.ObjectProperties> Values { get; set; }
 
+            [JsonProperty("y1AxisReferenceLine")] public List<VisualDto.ObjectProperties> Y1AxisReferenceLine { get; set; }
 
             [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
         }
@@ -812,7 +2951,7 @@ public static class Rx
 
         public class VisualObjectProperty
         {
-            [JsonProperty("expr")] public Field Expr { get; set; }
+            [JsonProperty("expr")] public VisualPropertyExpr Expr { get; set; }
             [JsonProperty("solid")] public SolidColor Solid { get; set; }
             [JsonProperty("color")] public ColorExpression Color { get; set; }
 
@@ -820,6 +2959,27 @@ public static class Rx
             public List<Paragraph> Paragraphs { get; set; }
 
             [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualPropertyExpr
+        {
+            // Existing Field properties
+            [JsonProperty("Measure")] public MeasureObject Measure { get; set; }
+            [JsonProperty("Column")] public ColumnField Column { get; set; }
+            [JsonProperty("Aggregation")] public Aggregation Aggregation { get; set; }
+            [JsonProperty("NativeVisualCalculation")] public NativeVisualCalculation NativeVisualCalculation { get; set; }
+
+            // New properties from JSON
+            [JsonProperty("SelectRef")] public SelectRefExpression SelectRef { get; set; }
+            [JsonProperty("Literal")] public VisualLiteral Literal { get; set; }
+
+            [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class SelectRefExpression
+        {
+            [JsonProperty("ExpressionName")]
+            public string ExpressionName { get; set; }
         }
 
         public class Paragraph
@@ -874,6 +3034,12 @@ public static class Rx
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
 
+        public class ThemeDataColor
+        {
+            [JsonProperty("ColorId")] public int ColorId { get; set; }
+            [JsonProperty("Percent")] public double Percent { get; set; }
+            [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
         public class VisualColorExprWrapper
         {
             [JsonProperty("Measure")]
@@ -890,6 +3056,11 @@ public static class Rx
 
             [JsonProperty("FillRule")]
             public FillRuleExpression FillRule { get; set; }
+
+            public VisualLiteral Literal { get; set; }
+
+            [JsonProperty("ThemeDataColor")] 
+            public ThemeDataColor ThemeDataColor { get; set; }
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
@@ -908,7 +3079,7 @@ public static class Rx
             public int? Order { get; set; }
 
             [JsonProperty("data")]
-            public List<object> Data { get; set; }
+            public List<DataObject> Data { get; set; }
 
             [JsonProperty("metadata")]
             public string Metadata { get; set; }
@@ -919,6 +3090,203 @@ public static class Rx
             [JsonExtensionData]
             public Dictionary<string, JToken> ExtensionData { get; set; }
         }
+
+        public class DataObject
+        {
+            [JsonProperty("dataViewWildcard")]
+            public DataViewWildcard DataViewWildcard { get; set; }
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class DataViewWildcard
+        {
+            [JsonProperty("matchingOption")]
+            public int MatchingOption { get; set; }
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterConfig
+        {
+            [JsonProperty("filters")]
+            public List<VisualFilter> Filters { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class VisualFilter
+        {
+            [JsonProperty("name")] public string Name { get; set; }
+            [JsonProperty("field")] public VisualDto.Field Field { get; set; }
+            [JsonProperty("type")] public string Type { get; set; }
+            [JsonProperty("filter")] public FilterDefinition Filter { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterDefinition
+        {
+            [JsonProperty("Version")] public int Version { get; set; }
+            [JsonProperty("From")] public List<FilterFrom> From { get; set; }
+            [JsonProperty("Where")] public List<FilterWhere> Where { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterFrom
+        {
+            [JsonProperty("Name")] public string Name { get; set; }
+            [JsonProperty("Entity")] public string Entity { get; set; }
+            [JsonProperty("Type")] public int Type { get; set; }
+            [JsonProperty("Expression")] public FilterExpression Expression { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterExpression
+        {
+            [JsonProperty("Subquery")] public SubqueryExpression Subquery { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class SubqueryExpression
+        {
+            [JsonProperty("Query")] public SubqueryQuery Query { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class SubqueryQuery
+        {
+            [JsonProperty("Version")] public int Version { get; set; }
+            [JsonProperty("From")] public List<FilterFrom> From { get; set; }
+            [JsonProperty("Select")] public List<SelectExpression> Select { get; set; }
+            [JsonProperty("OrderBy")] public List<OrderByExpression> OrderBy { get; set; }
+            [JsonProperty("Top")] public int? Top { get; set; }
+
+            [JsonProperty("Where")] public List<FilterWhere> Where { get; set; } // 🔹 Added
+
+            [JsonExtensionData] public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+
+        public class SelectExpression
+        {
+            [JsonProperty("Column")] public ColumnSelect Column { get; set; }
+            [JsonProperty("Name")] public string Name { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class ColumnSelect
+        {
+            [JsonProperty("Expression")]
+            public VisualDto.Expression Expression { get; set; }  // NOTE: wrapper that contains "SourceRef"
+
+            [JsonProperty("Property")]
+            public string Property { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class OrderByExpression
+        {
+            [JsonProperty("Direction")] public int Direction { get; set; }
+            [JsonProperty("Expression")] public OrderByInnerExpression Expression { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class OrderByInnerExpression
+        {
+            [JsonProperty("Measure")] public VisualDto.MeasureObject Measure { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterWhere
+        {
+            [JsonProperty("Condition")] public Condition Condition { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class Condition
+        {
+            [JsonProperty("In")] public InExpression In { get; set; }
+            [JsonProperty("Not")] public NotExpression Not { get; set; }
+            [JsonProperty("Comparison")] public ComparisonExpression Comparison { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class InExpression
+        {
+            [JsonProperty("Expressions")] public List<ColumnSelect> Expressions { get; set; }
+            [JsonProperty("Table")] public InTable Table { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class InTable
+        {
+            [JsonProperty("SourceRef")] public VisualDto.SourceRef SourceRef { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class NotExpression
+        {
+            [JsonProperty("Expression")] public Condition Expression { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class ComparisonExpression
+        {
+            [JsonProperty("ComparisonKind")] public int ComparisonKind { get; set; }
+            [JsonProperty("Left")] public FilterOperand Left { get; set; }
+            [JsonProperty("Right")] public FilterOperand Right { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class FilterOperand
+        {
+            [JsonProperty("Measure")] public VisualDto.MeasureObject Measure { get; set; }
+            [JsonProperty("Column")] public VisualDto.ColumnField Column { get; set; }
+            [JsonProperty("Literal")] public LiteralOperand Literal { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
+        public class LiteralOperand
+        {
+            [JsonProperty("Value")] public string Value { get; set; }
+
+            [JsonExtensionData]
+            public Dictionary<string, JToken> ExtensionData { get; set; }
+        }
+
 
         public class PropertiesConverter : JsonConverter
         {
@@ -975,6 +3343,71 @@ public static class Rx
 
         public string VisualFilePath { get; set; }
 
+        public bool isVisualGroup => Content?.VisualGroup != null;
+        public bool isGroupedVisual => Content?.ParentGroupName != null;
+
+        public bool IsBilingualVisualGroup()
+        {
+            if (!isVisualGroup || string.IsNullOrEmpty(Content.VisualGroup.DisplayName))
+                return false;
+            return System.Text.RegularExpressions.Regex.IsMatch(Content.VisualGroup.DisplayName, @"^P\d{2}-\d{3}$");
+        }
+
+        public PageExtended ParentPage { get; set; }
+
+        public bool IsInBilingualVisualGroup()
+        {
+            if (ParentPage == null || ParentPage.Visuals == null || Content.ParentGroupName == null)
+                return false;
+            return ParentPage.Visuals.Any(v => v.IsBilingualVisualGroup() && v.Content.Name == Content.ParentGroupName);
+        }
+
+        [JsonIgnore]
+        public string AltText
+        {
+            get
+            {
+                var general = Content?.Visual?.VisualContainerObjects?.General;
+                if (general == null || general.Count == 0)
+                    return null;
+                if (!general[0].Properties.ContainsKey("altText"))
+                    return null;
+                return general[0].Properties["altText"]?.Expr?.Literal?.Value?.Trim('\'');
+            }
+            set
+            {
+                if (Content?.Visual == null)
+                    Content.Visual = new VisualDto.Visual();
+
+                if (Content?.Visual?.VisualContainerObjects == null)
+                    Content.Visual.VisualContainerObjects = new VisualDto.VisualContainerObjects();
+
+                if (Content.Visual?.VisualContainerObjects.General == null || Content.Visual?.VisualContainerObjects.General.Count == 0)
+                    Content.Visual.VisualContainerObjects.General =
+                        new List<VisualDto.VisualContainerObject> {
+                        new VisualDto.VisualContainerObject {
+                            Properties = new Dictionary<string, VisualDto.VisualContainerProperty>()
+                        }
+                        };
+
+                var general = Content.Visual.VisualContainerObjects.General[0];
+
+                if (general.Properties == null)
+                    general.Properties = new Dictionary<string, VisualDto.VisualContainerProperty>();
+
+                general.Properties["altText"] = new VisualDto.VisualContainerProperty
+                {
+                    Expr = new VisualDto.VisualExpr
+                    {
+                        Literal = new VisualDto.VisualLiteral
+                        {
+                            Value = value == null ? null : "'" + value.Replace("'", "\\'") + "'"
+                        }
+                    }
+                };
+            }
+        }
+
         private IEnumerable<VisualDto.Field> GetAllFields()
         {
             var fields = new List<VisualDto.Field>();
@@ -1005,21 +3438,23 @@ public static class Rx
                 fields.AddRange(GetFieldsFromObjectList(objects.Legend));
                 fields.AddRange(GetFieldsFromObjectList(objects.General));
                 fields.AddRange(GetFieldsFromObjectList(objects.ValueAxis));
+                fields.AddRange(GetFieldsFromObjectList(objects.Y1AxisReferenceLine));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabel));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabelDetail));
                 fields.AddRange(GetFieldsFromObjectList(objects.ReferenceLabelValue));
-
             }
 
-            fields.AddRange(GetFieldsFromFilterConfig(Content?.FilterConfig));
+            fields.AddRange(GetFieldsFromFilterConfig(Content?.FilterConfig as VisualDto.FilterConfig));
 
             return fields.Where(f => f != null);
         }
 
-        private IEnumerable<VisualDto.Field> GetFieldsFromProjections(VisualDto.ProjectionsSet set)
+        public IEnumerable<VisualDto.Field> GetFieldsFromProjections(VisualDto.ProjectionsSet set)
         {
             return set?.Projections?.Select(p => p.Field) ?? Enumerable.Empty<VisualDto.Field>();
         }
+
+        
 
         private IEnumerable<VisualDto.Field> GetFieldsFromObjectList(List<VisualDto.ObjectProperties> objectList)
         {
@@ -1043,87 +3478,202 @@ public static class Rx
                             yield return new VisualDto.Field { Column = prop.Expr.Column };
                     }
 
-                    if (prop.Color != null &&
-                        prop.Color.Expr != null &&
-                        prop.Color.Expr.FillRule != null &&
-                        prop.Color.Expr.FillRule.Input != null)
-                    {
+                    if (prop.Color?.Expr?.FillRule?.Input != null)
                         yield return prop.Color.Expr.FillRule.Input;
-                    }
 
-                    if (prop.Solid != null &&
-                        prop.Solid.Color != null &&
-                        prop.Solid.Color.Expr != null &&
-                        prop.Solid.Color.Expr.FillRule != null &&
-                        prop.Solid.Color.Expr.FillRule.Input != null)
-                    {
+                    if (prop.Solid?.Color?.Expr?.FillRule?.Input != null)
                         yield return prop.Solid.Color.Expr.FillRule.Input;
-                    }
 
-                    var solidExpr = prop.Solid != null &&
-                                    prop.Solid.Color != null
-                                    ? prop.Solid.Color.Expr
-                                    : null;
-
-                    if (solidExpr != null)
-                    {
-                        if (solidExpr.Measure != null)
-                            yield return new VisualDto.Field { Measure = solidExpr.Measure };
-
-                        if (solidExpr.Column != null)
-                            yield return new VisualDto.Field { Column = solidExpr.Column };
-                    }
+                    var solidExpr = prop.Solid?.Color?.Expr;
+                    if (solidExpr?.Measure != null)
+                        yield return new VisualDto.Field { Measure = solidExpr.Measure };
+                    if (solidExpr?.Column != null)
+                        yield return new VisualDto.Field { Column = solidExpr.Column };
                 }
             }
         }
 
-        private IEnumerable<VisualDto.Field> GetFieldsFromFilterConfig(object filterConfig)
+        private IEnumerable<VisualDto.Field> GetFieldsFromFilterConfig(VisualDto.FilterConfig filterConfig)
         {
             var fields = new List<VisualDto.Field>();
 
-            if (filterConfig is JObject jObj)
+            if (filterConfig?.Filters == null)
+                return fields;
+
+            foreach (var filter in filterConfig.Filters ?? Enumerable.Empty<VisualDto.VisualFilter>())
             {
-                foreach (var token in jObj.DescendantsAndSelf().OfType<JObject>())
+                if (filter.Field != null)
+                    fields.Add(filter.Field);
+
+                if (filter.Filter != null)
                 {
-                    var table = token["table"]?.ToString();
-                    var property = token["column"]?.ToString() ?? token["measure"]?.ToString();
+                    var aliasMap = BuildAliasMap(filter.Filter.From);
 
-                    if (!string.IsNullOrEmpty(table) && !string.IsNullOrEmpty(property))
+                    foreach (var from in filter.Filter.From ?? Enumerable.Empty<VisualDto.FilterFrom>())
                     {
-                        var field = new VisualDto.Field();
-
-                        if (token["measure"] != null)
-                        {
-                            field.Measure = new VisualDto.MeasureObject
-                            {
-                                Property = property,
-                                Expression = new VisualDto.Expression
-                                {
-                                    SourceRef = new VisualDto.SourceRef { Entity = table }
-                                }
-                            };
-                        }
-                        else if (token["column"] != null)
-                        {
-                            field.Column = new VisualDto.ColumnField
-                            {
-                                Property = property,
-                                Expression = new VisualDto.Expression
-                                {
-                                    SourceRef = new VisualDto.SourceRef { Entity = table }
-                                }
-                            };
-                        }
-
-                        fields.Add(field);
+                        if (from.Expression?.Subquery?.Query != null)
+                            ExtractFieldsFromSubquery(from.Expression.Subquery.Query, fields);
                     }
+
+                    foreach (var where in filter.Filter.Where ?? Enumerable.Empty<VisualDto.FilterWhere>())
+                        ExtractFieldsFromCondition(where.Condition, fields, aliasMap);
                 }
             }
 
             return fields;
         }
 
+        private void ExtractFieldsFromSubquery(VisualDto.SubqueryQuery query, List<VisualDto.Field> fields)
+        {
+            var aliasMap = BuildAliasMap(query.From);
 
+            // SELECT columns
+            foreach (var sel in query.Select ?? Enumerable.Empty<VisualDto.SelectExpression>())
+            {
+                var srcRef = sel.Column?.Expression?.SourceRef ?? new VisualDto.SourceRef();
+                srcRef.Source = ResolveSource(srcRef.Source, aliasMap);
+
+                var columnExpr = sel.Column ?? new VisualDto.ColumnSelect();
+                columnExpr.Expression ??= new VisualDto.Expression();
+                columnExpr.Expression.SourceRef ??= new VisualDto.SourceRef();
+                columnExpr.Expression.SourceRef.Source = srcRef.Source;
+
+                fields.Add(new VisualDto.Field
+                {
+                    Column = new VisualDto.ColumnField
+                    {
+                        Property = sel.Column.Property,
+                        Expression = new VisualDto.Expression
+                        {
+                            SourceRef = columnExpr.Expression.SourceRef
+                        }
+                    }
+                });
+            }
+
+            // ORDER BY measures
+            foreach (var ob in query.OrderBy ?? Enumerable.Empty<VisualDto.OrderByExpression>())
+            {
+                var measureExpr = ob.Expression?.Measure?.Expression ?? new VisualDto.Expression();
+                measureExpr.SourceRef ??= new VisualDto.SourceRef();
+                measureExpr.SourceRef.Source = ResolveSource(measureExpr.SourceRef.Source, aliasMap);
+
+                fields.Add(new VisualDto.Field
+                {
+                    Measure = new VisualDto.MeasureObject
+                    {
+                        Property = ob.Expression.Measure.Property,
+                        Expression = measureExpr
+                    }
+                });
+            }
+
+            // Nested subqueries
+            foreach (var from in query.From ?? Enumerable.Empty<VisualDto.FilterFrom>())
+                if (from.Expression?.Subquery?.Query != null)
+                    ExtractFieldsFromSubquery(from.Expression.Subquery.Query, fields);
+
+            // WHERE conditions
+            foreach (var where in query.Where ?? Enumerable.Empty<VisualDto.FilterWhere>())
+                ExtractFieldsFromCondition(where.Condition, fields, aliasMap);
+        }
+        private Dictionary<string, string> BuildAliasMap(List<VisualDto.FilterFrom> fromList)
+        {
+            var map = new Dictionary<string, string>();
+            foreach (var from in fromList ?? Enumerable.Empty<VisualDto.FilterFrom>())
+            {
+                if (!string.IsNullOrEmpty(from.Name) && !string.IsNullOrEmpty(from.Entity))
+                    map[from.Name] = from.Entity;
+            }
+            return map;
+        }
+
+        private string ResolveSource(string source, Dictionary<string, string> aliasMap)
+        {
+            if (string.IsNullOrEmpty(source))
+                return source;
+            return aliasMap.TryGetValue(source, out var entity) ? entity : source;
+        }
+
+        private void ExtractFieldsFromCondition(VisualDto.Condition condition, List<VisualDto.Field> fields, Dictionary<string, string> aliasMap)
+        {
+            if (condition == null) return;
+
+            // IN Expression
+            if (condition.In != null)
+            {
+                foreach (var expr in condition.In.Expressions ?? Enumerable.Empty<VisualDto.ColumnSelect>())
+                {
+                    var srcRef = expr.Expression?.SourceRef ?? new VisualDto.SourceRef();
+                    srcRef.Source = ResolveSource(srcRef.Source, aliasMap);
+
+                    fields.Add(new VisualDto.Field
+                    {
+                        Column = new VisualDto.ColumnField
+                        {
+                            Property = expr.Property,
+                            Expression = new VisualDto.Expression
+                            {
+                                SourceRef = srcRef
+                            }
+                        }
+                    });
+                }
+            }
+
+            // NOT Expression
+            if (condition.Not != null)
+                ExtractFieldsFromCondition(condition.Not.Expression, fields, aliasMap);
+
+            // COMPARISON Expression
+            if (condition.Comparison != null)
+            {
+                AddOperandField(condition.Comparison.Left, fields, aliasMap);
+                AddOperandField(condition.Comparison.Right, fields, aliasMap);
+            }
+        }
+        private void AddOperandField(VisualDto.FilterOperand operand, List<VisualDto.Field> fields, Dictionary<string, string> aliasMap)
+        {
+            if (operand == null) return;
+
+            // MEASURE
+            if (operand.Measure != null)
+            {
+                var srcRef = operand.Measure.Expression?.SourceRef ?? new VisualDto.SourceRef();
+                srcRef.Source = ResolveSource(srcRef.Source, aliasMap);
+
+                fields.Add(new VisualDto.Field
+                {
+                    Measure = new VisualDto.MeasureObject
+                    {
+                        Property = operand.Measure.Property,
+                        Expression = new VisualDto.Expression
+                        {
+                            SourceRef = srcRef
+                        }
+                    }
+                });
+            }
+
+            // COLUMN
+            if (operand.Column != null)
+            {
+                var srcRef = operand.Column.Expression?.SourceRef ?? new VisualDto.SourceRef();
+                srcRef.Source = ResolveSource(srcRef.Source, aliasMap);
+
+                fields.Add(new VisualDto.Field
+                {
+                    Column = new VisualDto.ColumnField
+                    {
+                        Property = operand.Column.Property,
+                        Expression = new VisualDto.Expression
+                        {
+                            SourceRef = srcRef
+                        }
+                    }
+                });
+            }
+        }
         public IEnumerable<string> GetAllReferencedMeasures()
         {
             return GetAllFields()
@@ -1195,15 +3745,35 @@ public static class Rx
             {
                 if (f == null) return;
 
-                if (isMeasure)
+                if (isMeasure && newField.Measure != null)
                 {
-                    f.Measure = newField.Measure;
+                    // Preserve Expression with SourceRef
+                    f.Measure ??= new VisualDto.MeasureObject();
+                    f.Measure.Property = newField.Measure.Property;
+                    f.Measure.Expression ??= new VisualDto.Expression();
+                    f.Measure.Expression.SourceRef = newField.Measure.Expression?.SourceRef != null
+                        ? new VisualDto.SourceRef
+                        {
+                            Entity = newField.Measure.Expression.SourceRef.Entity,
+                            Source = newField.Measure.Expression.SourceRef.Source
+                        }
+                        : f.Measure.Expression.SourceRef;
                     f.Column = null;
                     wasModified = true;
                 }
-                else
+                else if (!isMeasure && newField.Column != null)
                 {
-                    f.Column = newField.Column;
+                    // Preserve Expression with SourceRef
+                    f.Column ??= new VisualDto.ColumnField();
+                    f.Column.Property = newField.Column.Property;
+                    f.Column.Expression ??= new VisualDto.Expression();
+                    f.Column.Expression.SourceRef = newField.Column.Expression?.SourceRef != null
+                        ? new VisualDto.SourceRef
+                        {
+                            Entity = newField.Column.Expression.SourceRef.Entity,
+                            Source = newField.Column.Expression.SourceRef.Source
+                        }
+                        : f.Column.Expression.SourceRef;
                     f.Measure = null;
                     wasModified = true;
                 }
@@ -1218,17 +3788,16 @@ public static class Rx
                     Replace(proj.Field);
 
                     string entity = isMeasure
-                        ? newField.Measure.Expression?.SourceRef?.Entity
-                        : newField.Column.Expression?.SourceRef?.Entity;
+                        ? proj.Field.Measure.Expression?.SourceRef?.Entity
+                        : proj.Field.Column.Expression?.SourceRef?.Entity;
 
                     string prop = isMeasure
-                        ? newField.Measure.Property
-                        : newField.Column.Property;
+                        ? proj.Field.Measure.Property
+                        : proj.Field.Column.Property;
 
                     if (!string.IsNullOrEmpty(entity) && !string.IsNullOrEmpty(prop))
                     {
                         proj.QueryRef = $"{entity}.{prop}";
-                        //proj.NativeQueryRef = prop;
                     }
 
                     wasModified = true;
@@ -1240,7 +3809,7 @@ public static class Rx
 
             foreach (var proj in query?.QueryState?.Y?.Projections ?? Enumerable.Empty<VisualDto.Projection>())
                 UpdateProjection(proj);
-            
+
             foreach (var proj in query?.QueryState?.Y2?.Projections ?? Enumerable.Empty<VisualDto.Projection>())
                 UpdateProjection(proj);
 
@@ -1275,7 +3844,8 @@ public static class Rx
                 .Concat(objects?.ReferenceLabel ?? Enumerable.Empty<VisualDto.ObjectProperties>())
                 .Concat(objects?.ReferenceLabelDetail ?? Enumerable.Empty<VisualDto.ObjectProperties>())
                 .Concat(objects?.ReferenceLabelValue ?? Enumerable.Empty<VisualDto.ObjectProperties>())
-                .Concat(objects?.Values ?? Enumerable.Empty<VisualDto.ObjectProperties>());
+                .Concat(objects?.Values ?? Enumerable.Empty<VisualDto.ObjectProperties>())
+                .Concat(objects?.Y1AxisReferenceLine ?? Enumerable.Empty<VisualDto.ObjectProperties>());
 
             foreach (var obj in AllObjectProperties())
             {
@@ -1288,13 +3858,19 @@ public static class Rx
                         {
                             if (isMeasure)
                             {
-                                prop.Expr.Measure = newField.Measure;
+                                prop.Expr.Measure ??= new VisualDto.MeasureObject();
+                                prop.Expr.Measure.Property = newField.Measure.Property;
+                                prop.Expr.Measure.Expression ??= new VisualDto.Expression();
+                                prop.Expr.Measure.Expression.SourceRef = newField.Measure.Expression?.SourceRef;
                                 prop.Expr.Column = null;
                                 wasModified = true;
                             }
                             else
                             {
-                                prop.Expr.Column = newField.Column;
+                                prop.Expr.Column ??= new VisualDto.ColumnField();
+                                prop.Expr.Column.Property = newField.Column.Property;
+                                prop.Expr.Column.Expression ??= new VisualDto.Expression();
+                                prop.Expr.Column.Expression.SourceRef = newField.Column.Expression?.SourceRef;
                                 prop.Expr.Measure = null;
                                 wasModified = true;
                             }
@@ -1306,13 +3882,19 @@ public static class Rx
                     {
                         if (isMeasure)
                         {
-                            fillInput.Measure = newField.Measure;
+                            fillInput.Measure ??= new VisualDto.MeasureObject();
+                            fillInput.Measure.Property = newField.Measure.Property;
+                            fillInput.Measure.Expression ??= new VisualDto.Expression();
+                            fillInput.Measure.Expression.SourceRef = newField.Measure.Expression?.SourceRef;
                             fillInput.Column = null;
                             wasModified = true;
                         }
                         else
                         {
-                            fillInput.Column = newField.Column;
+                            fillInput.Column ??= new VisualDto.ColumnField();
+                            fillInput.Column.Property = newField.Column.Property;
+                            fillInput.Column.Expression ??= new VisualDto.Expression();
+                            fillInput.Column.Expression.SourceRef = newField.Column.Expression?.SourceRef;
                             fillInput.Measure = null;
                             wasModified = true;
                         }
@@ -1323,19 +3905,24 @@ public static class Rx
                     {
                         if (isMeasure)
                         {
-                            solidInput.Measure = newField.Measure;
+                            solidInput.Measure ??= new VisualDto.MeasureObject();
+                            solidInput.Measure.Property = newField.Measure.Property;
+                            solidInput.Measure.Expression ??= new VisualDto.Expression();
+                            solidInput.Measure.Expression.SourceRef = newField.Measure.Expression?.SourceRef;
                             solidInput.Column = null;
                             wasModified = true;
                         }
                         else
                         {
-                            solidInput.Column = newField.Column;
+                            solidInput.Column ??= new VisualDto.ColumnField();
+                            solidInput.Column.Property = newField.Column.Property;
+                            solidInput.Column.Expression ??= new VisualDto.Expression();
+                            solidInput.Column.Expression.SourceRef = newField.Column.Expression?.SourceRef;
                             solidInput.Measure = null;
                             wasModified = true;
                         }
                     }
 
-                    // ✅ NEW: handle direct measure/column under solid.color.expr
                     var solidExpr = prop.Solid?.Color?.Expr;
                     if (solidExpr != null)
                     {
@@ -1347,13 +3934,19 @@ public static class Rx
                         {
                             if (isMeasure)
                             {
-                                solidExpr.Measure = newField.Measure;
+                                solidExpr.Measure ??= new VisualDto.MeasureObject();
+                                solidExpr.Measure.Property = newField.Measure.Property;
+                                solidExpr.Measure.Expression ??= new VisualDto.Expression();
+                                solidExpr.Measure.Expression.SourceRef = newField.Measure.Expression?.SourceRef;
                                 solidExpr.Column = null;
                                 wasModified = true;
                             }
                             else
                             {
-                                solidExpr.Column = newField.Column;
+                                solidExpr.Column ??= new VisualDto.ColumnField();
+                                solidExpr.Column.Property = newField.Column.Property;
+                                solidExpr.Column.Expression ??= new VisualDto.Expression();
+                                solidExpr.Column.Expression.SourceRef = newField.Column.Expression?.SourceRef;
                                 solidExpr.Measure = null;
                                 wasModified = true;
                             }
@@ -1368,57 +3961,30 @@ public static class Rx
                 }
             }
 
-            if (Content.FilterConfig != null)
-            {
-                var filterConfigString = Content.FilterConfig.ToString();
-                string table = isMeasure ? newField.Measure.Expression.SourceRef.Entity : newField.Column.Expression.SourceRef.Entity;
-                string prop = isMeasure ? newField.Measure.Property : newField.Column.Property;
-
-                string oldPattern = oldFieldKey;
-                string newPattern = $"'{table}'[{prop}]";
-
-                if (filterConfigString.Contains(oldPattern))
-                {
-                    Content.FilterConfig = filterConfigString.Replace(oldPattern, newPattern);
-                    wasModified = true;
-                }
-            }
             if (wasModified && modifiedSet != null)
                 modifiedSet.Add(this);
-
-        }
-
-        public void ReplaceInFilterConfigRaw(
-            Dictionary<string, string> tableMap,
-            Dictionary<string, string> fieldMap,
-            HashSet<VisualExtended> modifiedVisuals = null)
-        {
-            if (Content.FilterConfig == null) return;
-
-            string originalJson = JsonConvert.SerializeObject(Content.FilterConfig);
-            string updatedJson = originalJson;
-
-            foreach (var kv in tableMap)
-                updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
-
-            foreach (var kv in fieldMap)
-                updatedJson = updatedJson.Replace($"\"{kv.Key}\"", $"\"{kv.Value}\"");
-
-            // Only update and track if something actually changed
-            if (updatedJson != originalJson)
-            {
-                Content.FilterConfig = JsonConvert.DeserializeObject(updatedJson);
-                modifiedVisuals?.Add(this);
-            }
         }
 
     }
 
 
-
     public class PageExtended
     {
         public PageDto Page { get; set; }
+
+        public ReportExtended ParentReport { get; set; }
+
+        public int PageIndex
+        {
+            get
+            {
+                if (ParentReport == null || ParentReport.PagesConfig == null || ParentReport.PagesConfig.PageOrder == null)
+                    return -1;
+                return ParentReport.PagesConfig.PageOrder.IndexOf(Page.Name);
+            }
+        }
+
+
         public IList<VisualExtended> Visuals { get; set; } = new List<VisualExtended>();
         public string PageFilePath { get; set; }
     }
