@@ -1,16 +1,16 @@
-#r "Microsoft.VisualBasic"
 #r "System.Drawing"
+#r "Microsoft.VisualBasic"
 using System.Windows.Forms;
-
 using Microsoft.VisualBasic;
+using System.Text.RegularExpressions;
+
+//2026-06-29 / B.Agullo / added support for optional parameters, parameter description and more
 //2026-03-29 / B.Agullo / added support for propertyNames annotation
 //2026-02-15 / B.Agullo / improved default function annotation values and added support for output properties annotation.
 //2025-09-26/B.Agullo/ fixed bug that would not store annotations if initialized during runtime
 //2025-09-16/B.Agullo/
 //Creates measures based on DAX UDFs 
 //Check the blog post for futher information: https://www.esbrina-ba.com/automatically-create-measures-with-dax-user-defined-functions/
-using System.Text.RegularExpressions;
-
 #if TE3
 ScriptHelper.WaitFormVisible = false;
 #endif
@@ -61,24 +61,34 @@ var parameterObjectsMap = new Dictionary<string, (IList<string> Values, string T
 foreach (var param in distinctParameters)
 {
     string selectionType = null;
-    if (param.Name.ToUpper().Contains("MEASURE"))
+    if (param.Type == "CALENDARREF" || param.Name.ToUpper().EndsWith("CALENDAR"))
+    {
+        selectionType = "Calendar";
+    }
+    else if (param.Type == "MEASUREREF" || param.Name.ToUpper().Contains("MEASURE"))
     {
         selectionType = "Measure";
     }
-    else if (param.Name.ToUpper().Contains("COLUMN"))
+    else if (param.Type == "COLUMNREF" || param.Name.ToUpper().Contains("COLUMN"))
     {
         selectionType = "Column";
     }
-    else if (param.Name.ToUpper().Contains("TABLE"))
+    else if (param.Type == "TABLEREF" || param.Name.ToUpper().Contains("TABLE"))
     {
         selectionType = "Table";
+    }
+    else if (param.Name.ToUpper().Contains("TEXT") || param.Name.ToUpper().Contains("STRING"))
+    {
+        selectionType = "Text";
     }
     (IList<string> Values, string Type) selectedObjectsForParam = Fx.SelectAnyObjects(
         Model,
         selectionType: selectionType,
         prompt1: String.Format(@"Select object type for {0} parameter", param.Name),
         prompt2: String.Format(@"Select item for {0} parameter", param.Name),
-        placeholderValue: param.Name
+        placeholderValue: param.Name,
+        defaultValue: param.DefaultValue,
+        description: param.Description
     );
     if (selectedObjectsForParam.Values == null || selectedObjectsForParam.Type == null) return; //user cancelled
     parameterObjectsMap[param.Name] = selectedObjectsForParam;
@@ -146,7 +156,14 @@ foreach (var func in selectedFunctions)
                 string paramPropertiesPlaceholder = param.Name + "Properties";
                 string paramPropertyNamesPlaceholder = param.Name + "PropertyNames";
                 string paramTablePlaceholder = "";
-                if (paramObject.Type == "Measure")
+                // Empty value means the parameter default is used: keep the comma (blank arg)
+                bool useDefault = string.IsNullOrEmpty(o);
+                if (useDefault)
+                {
+                    paramName = "";
+                    paramTablePlaceholder = param.Name;
+                }
+                else if (paramObject.Type == "Measure")
                 {
                     Measure m = Model.AllMeasures.FirstOrDefault(m => m.DaxObjectFullName == o);
                     paramName = m.Name;
@@ -177,6 +194,18 @@ foreach (var func in selectedFunctions)
                     paramTable = t.DaxObjectFullName;
                     paramProperties = t.GetAnnotation("Properties") ?? "";
                     paramPropertyNames = t.GetAnnotation("PropertyNames") ?? "";
+                    paramTablePlaceholder = param.Name;
+                }
+                else if (paramObject.Type == "Calendar")
+                {
+                    // o is the quoted calendar reference ('Name'); strip quotes for the display name
+                    paramName = o.Trim('\'');
+                    paramTablePlaceholder = param.Name;
+                }
+                else
+                {
+                    // Scalar / Text: use the value itself (strip quotes) as the display name
+                    paramName = o.Trim('"');
                     paramTablePlaceholder = param.Name;
                 }
                 if (paramFormatStringFull.Contains(";"))
@@ -458,6 +487,7 @@ public static class Fx
         form.Controls.Add(treeView);
         form.Controls.Add(buttonPanel);
         // Show dialog
+        ResetWaitCursor();
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
@@ -602,8 +632,24 @@ public static class Fx
             return null as Measure;
         }
     }
+    // In TE2 scripts run inside an "Hourglass" that sets Application.UseWaitCursor = true for the
+    // whole application, so dialog boxes show a busy cursor (TE3 solves this with WaitFormVisible).
+    // Turn the flag off and nudge Windows (WM_SETCURSOR) to refresh the cursor immediately,
+    // otherwise it only updates on the next mouse message. Call this before showing any dialog.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wp, IntPtr lp);
+    public static void ResetWaitCursor()
+    {
+        if (!Application.UseWaitCursor) return;
+        Application.UseWaitCursor = false;
+        Cursor.Current = Cursors.Default;
+        Form f = Form.ActiveForm;
+        if (f != null && f.Handle != IntPtr.Zero)
+            SendMessage(f.Handle, 0x20, f.Handle, (IntPtr)1); // WM_SETCURSOR
+    }
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
+        ResetWaitCursor();
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
         if (response == null)
         {
@@ -614,10 +660,12 @@ public static class Fx
     }
     public static bool IsAnswerYes(string question, string title = "Please confirm")
     {
+        ResetWaitCursor();
         var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         return result == DialogResult.Yes;
     }
-    public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "")
+    public const string DefaultSentinel = "<<USE_DEFAULT>>";
+    public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "", string defaultValue = null, string description = null)
     {
         var returnEmpty = (Values: new List<string>(), Type: (string)null);
         if (prompt1.Contains("{0}"))
@@ -626,7 +674,7 @@ public static class Fx
             prompt2 = string.Format(prompt2, placeholderValue ?? "");
         if (selectionType == null)
         {
-            IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "Scalar" };
+            IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "Calendar", "Scalar", "Text" };
             selectionType = ChooseString(selectionTypeOptions, label: prompt1, customWidth: 600);
         }
         if (selectionType == null) return returnEmpty;
@@ -634,35 +682,51 @@ public static class Fx
         switch (selectionType)
         {
             case "Table":
-                selectedValues = SelectTableMultiple(model, label: prompt2);
+                selectedValues = SelectTableMultiple(model, label: prompt2, defaultValue: defaultValue, description: description);
                 break;
             case "Column":
-                selectedValues = SelectColumnMultiple(model, label: prompt2);
+                selectedValues = SelectColumnMultiple(model, label: prompt2, defaultValue: defaultValue, description: description);
                 break;
             case "Measure":
-                selectedValues = SelectMeasureMultiple(model: model, label: prompt2);
+                selectedValues = SelectMeasureMultiple(model: model, label: prompt2, defaultValue: defaultValue, description: description);
+                break;
+            case "Calendar":
+                selectedValues = SelectCalendarMultiple(model, label: prompt2, defaultValue: defaultValue, description: description);
                 break;
             case "Scalar":
                 IList<string> scalarList = new List<string>();
-                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));
+                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", defaultValue ?? "0"));
                 selectedValues = scalarList;
+                break;
+            case "Text":
+                IList<string> textList = new List<string>();
+                string textValue = GetNameFromUser(prompt2, "Text value", defaultValue ?? "");
+                if (textValue == null) return returnEmpty;
+                // Wrap in double quotes if not already a quoted DAX string literal
+                if (!(textValue.StartsWith("\"") && textValue.EndsWith("\"")))
+                    textValue = "\"" + textValue + "\"";
+                textList.Add(textValue);
+                selectedValues = textList;
                 break;
             default:
                 Error("Invalid selection type");
                 return returnEmpty;
         }
-        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty; 
+        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty;
+        // Default-value option selected: return empty value so the argument is left blank (default used)
+        if (selectedValues.Count == 1 && selectedValues[0] == DefaultSentinel)
+            return (Values: new List<string>() { "" }, Type: selectionType);
         return (Values:selectedValues, Type:selectionType);
     }
     public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
     {
         return ChooseStringInternal(OptionList, MultiSelect: false, label: label, customWidth: customWidth, customHeight:customHeight) as string;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 650, int customHeight = 550)
+    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 650, int customHeight = 550, string defaultValue = null, string description = null)
     {
-        return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight) as List<string>;
+        return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight, defaultValue: defaultValue, description: description) as List<string>;
     }
-    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
+    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500, string defaultValue = null, string description = null)
     {
         Form form = new Form
         {
@@ -695,11 +759,46 @@ public static class Fx
         };
         searchPanel.Controls.Add(searchLabel);
         searchPanel.Controls.Add(searchBox);
+        // Optional info panel: parameter description and "use default" checkbox
+        CheckBox useDefaultCheck = null;
+        Panel infoPanel = null;
+        int infoPanelHeight = 0;
+        if (!string.IsNullOrEmpty(description) || !string.IsNullOrEmpty(defaultValue))
+        {
+            infoPanel = new Panel { Dock = DockStyle.Top, Padding = new Padding(0, 0, 0, 5) };
+            int infoY = 0;
+            if (!string.IsNullOrEmpty(description))
+            {
+                Label descLabel = new System.Windows.Forms.Label
+                {
+                    Text = description,
+                    Location = new System.Drawing.Point(0, infoY),
+                    Width = customWidth - 60,
+                    Height = 36,
+                    Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+                };
+                infoPanel.Controls.Add(descLabel);
+                infoY += 40;
+                infoPanelHeight += 40;
+            }
+            if (!string.IsNullOrEmpty(defaultValue))
+            {
+                useDefaultCheck = new CheckBox
+                {
+                    Text = String.Format("Use default ({0})", defaultValue),
+                    Location = new System.Drawing.Point(0, infoY),
+                    AutoSize = true
+                };
+                infoPanel.Controls.Add(useDefaultCheck);
+                infoPanelHeight += 30;
+            }
+            infoPanel.Height = infoPanelHeight;
+        }
         // ListBox panel in the middle
         Panel listBoxPanel = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(0, 35, 0, 75)  // Top padding = searchPanel height, Bottom = buttonPanel height
+            Padding = new Padding(0, 35 + infoPanelHeight, 0, 75)  // Top padding = info + searchPanel height, Bottom = buttonPanel height
         };
         ListBox listbox = new ListBox
         {
@@ -798,14 +897,33 @@ public static class Fx
         // Add controls in proper order for Dock: Bottom first, Top second, Fill last
         form.Controls.Add(buttonPanel);    // Bottom - add first
         form.Controls.Add(searchPanel);    // Top - add second
+        if (infoPanel != null) form.Controls.Add(infoPanel);  // Top - sits above search panel
         form.Controls.Add(listBoxPanel);   // Fill - add last
+        // When "use default" is checked, disable the list/search to make clear the default will be used
+        if (useDefaultCheck != null)
+        {
+            useDefaultCheck.CheckedChanged += delegate
+            {
+                bool useDefault = useDefaultCheck.Checked;
+                listbox.Enabled = !useDefault;
+                searchBox.Enabled = !useDefault;
+                selectAllButton.Enabled = !useDefault;
+                selectNoneButton.Enabled = !useDefault;
+            };
+        }
         form.Width = customWidth;
-        form.Height = customHeight;
+        form.Height = customHeight + infoPanelHeight;
+        ResetWaitCursor();
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
             Info("You Cancelled!");
             return null;
+        }
+        // Default checkbox checked: signal default usage to the caller
+        if (useDefaultCheck != null && useDefaultCheck.Checked)
+        {
+            return MultiSelect ? (object)new List<string>() { DefaultSentinel } : (object)DefaultSentinel;
         }
         if (MultiSelect)
         {
@@ -958,7 +1076,7 @@ public static class Fx
         var filteredColumns = columns.Where(c => lambda(c));
         return filteredColumns.Any() || returnAllIfNoneFound ? filteredColumns : null;
     }
-    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
+    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)", string defaultValue = null, string description = null)
     {
         measures ??= model.AllMeasures;
         // Create display strings with format: TableName\DisplayFolder\[MeasureName]
@@ -979,28 +1097,50 @@ public static class Fx
             displayList.Add(displayString);
         }
         // Show the display list to user
-        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label);
+        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label, defaultValue: defaultValue, description: description);
         if (selectedDisplayStrings == null || selectedDisplayStrings.Count == 0)
             return new List<string>();
+        // Pass through the default sentinel unchanged
+        if (selectedDisplayStrings.Count == 1 && selectedDisplayStrings[0] == DefaultSentinel)
+            return selectedDisplayStrings;
         // Map back to DaxObjectFullName
         var selectedMeasureNames = selectedDisplayStrings
             .Select(display => measureDisplayMap[display])
             .ToList();
         return selectedMeasureNames;
     }
-    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
+    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)", string defaultValue = null, string description = null)
     {
         columns ??= model.AllColumns;
         IList<string> columnNames = columns.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label);
+        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label, defaultValue: defaultValue, description: description);
         return selectedColumnNames;
     }
-    public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400)
+    public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400, string defaultValue = null, string description = null)
     {
         Tables ??= model.Tables;
         IList<string> TableNames = Tables.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedTableNames = ChooseStringMultiple(TableNames, label: label, customWidth: customWidth);
+        IList<string> selectedTableNames = ChooseStringMultiple(TableNames, label: label, customWidth: customWidth, defaultValue: defaultValue, description: description);
         return selectedTableNames;
+    }
+    public static IList<string> SelectCalendarMultiple(Model model, string label = "Select Calendar(s)", string defaultValue = null, string description = null)
+    {
+        // Build a display->reference map: display is the calendar name, reference is quoted 'Name'
+        var calendarMap = new Dictionary<string, string>();
+        var displayList = new List<string>();
+        foreach (var calendar in model.AllCalendars.OrderBy(c => c.Name))
+        {
+            string display = calendar.Name;
+            calendarMap[display] = "'" + calendar.Name + "'";
+            displayList.Add(display);
+        }
+        var selectedDisplay = ChooseStringMultiple(displayList, label: label, defaultValue: defaultValue, description: description);
+        if (selectedDisplay == null || selectedDisplay.Count == 0)
+            return new List<string>();
+        // Pass through the default sentinel unchanged
+        if (selectedDisplay.Count == 1 && selectedDisplay[0] == DefaultSentinel)
+            return selectedDisplay;
+        return selectedDisplay.Select(d => calendarMap[d]).ToList();
     }
 }
 
@@ -1035,20 +1175,52 @@ public static class Fx
 
             string paramSection = expression.Substring(openParenIndex + 1, closeParenIndex - openParenIndex - 1);
             var paramList = new List<FunctionParameter>();
-            var paramStrings = paramSection.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
 
-            foreach (var param in paramStrings)
+            // Split parameters preserving per-line layout so that an end-of-line comment can be
+            // captured as the parameter description (only when there is one parameter per line).
+            var paramStrings = paramSection.IndexOf('\n') >= 0
+                ? paramSection.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                : paramSection.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var rawParam in paramStrings)
             {
-                var trimmed = param.Trim();
+                var param = rawParam.Trim().TrimEnd(',');
+                string description = null;
+
+                // Extract end-of-line comment (// ...) as the parameter description
+                int commentIndex = param.IndexOf("//");
+                if (commentIndex >= 0)
+                {
+                    description = param.Substring(commentIndex + 2).Trim();
+                    param = param.Substring(0, commentIndex);
+                }
+
+                // Extract default value if present (param: TYPE = defaultExpression)
+                string defaultValue = null;
+                int equalsIndex = param.IndexOf('=');
+                if (equalsIndex >= 0)
+                {
+                    defaultValue = param.Substring(equalsIndex + 1).Trim().TrimEnd(',').Trim();
+                    param = param.Substring(0, equalsIndex);
+                }
+
+                var trimmed = param.Trim().TrimEnd(',').Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
                 var nameParams = trimmed.Split(new[] { ':' }, StringSplitOptions.RemoveEmptyEntries);
                 //var parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
                 var fp = new FunctionParameter();
+                fp.DefaultValue = defaultValue;
+                fp.Description = description;
                 fp.Name = nameParams.Length > 0 ? nameParams[0].Trim() : param.Trim();
                 fp.Type =
                     (nameParams.Length == 1) ? "ANYVAL" :
                     (nameParams.Length > 1) ?
-                        (nameParams[1].IndexOf("anyVal", StringComparison.OrdinalIgnoreCase) >= 0 ? "ANYVAL" :
+                        (nameParams[1].IndexOf("calendarRef", StringComparison.OrdinalIgnoreCase) >= 0 ? "CALENDARREF" :
+                         nameParams[1].IndexOf("measureRef", StringComparison.OrdinalIgnoreCase) >= 0 ? "MEASUREREF" :
+                         nameParams[1].IndexOf("columnRef", StringComparison.OrdinalIgnoreCase) >= 0 ? "COLUMNREF" :
+                         nameParams[1].IndexOf("tableRef", StringComparison.OrdinalIgnoreCase) >= 0 ? "TABLEREF" :
+                         nameParams[1].IndexOf("anyVal", StringComparison.OrdinalIgnoreCase) >= 0 ? "ANYVAL" :
                          nameParams[1].IndexOf("Scalar", StringComparison.OrdinalIgnoreCase) >= 0 ? "SCALAR" :
                          nameParams[1].IndexOf("Table", StringComparison.OrdinalIgnoreCase) >= 0 ? "TABLE" :
                          nameParams[1].IndexOf("AnyRef", StringComparison.OrdinalIgnoreCase) >= 0 ? "ANYREF" :
@@ -1076,7 +1248,7 @@ public static class Fx
                     paramMode = "VAL";
                 else if (trimmed.IndexOf("EXPR", StringComparison.OrdinalIgnoreCase) >= 0)
                     paramMode = "EXPR";
-                else if (fp.Type == "ANYREF")
+                else if (fp.Type == "ANYREF" || fp.Type.EndsWith("REF"))
                 {
                     paramMode = "EXPR";
                 }else
@@ -1291,4 +1463,6 @@ public static class Fx
         public string Type { get; set; }
         public string Subtype { get; set; }
         public string ParameterMode { get; set; }
+        public string DefaultValue { get; set; }
+        public string Description { get; set; }
     }
