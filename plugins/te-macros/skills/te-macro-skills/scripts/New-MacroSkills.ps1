@@ -248,7 +248,7 @@ This skill runs the Tabular Editor 3 macro **$($s.MacroName)** through the Tabul
         $isNew = -not (Test-Path $dir)
         $changed = $isNew -or @($files.Keys | Where-Object {
             $f = Join-Path $dir $_
-            -not (Test-Path $f) -or [IO.File]::ReadAllText($f) -ne $files[$_]
+            -not (Test-Path $f) -or [IO.File]::ReadAllText($f) -cne $files[$_]
         }).Count -gt 0
 
         if (-not $changed) { $status = 'unchanged' }
