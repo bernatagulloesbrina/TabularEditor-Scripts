@@ -1,0 +1,10 @@
+{
+  "name": "te-macros",
+  "version": "1.0.0",
+  "description": "Import skill-ready Tabular Editor 3 macros from GitHub and turn them into Claude skills that run through the Tabular Editor CLI.",
+  "author": {
+    "name": "Bernat Agulló Roselló"
+  },
+  "repository": "https://github.com/bernatagulloesbrina/TabularEditor-Scripts",
+  "keywords": ["tabular-editor", "macros", "semantic-model", "power-bi"]
+}

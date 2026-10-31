@@ -1,0 +1,16 @@
+{
+  "name": "tabular-editor-scripts",
+  "owner": {
+    "name": "Bernat Agulló Roselló"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for the Tabular Editor scripts and macros in this repository."
+  },
+  "plugins": [
+    {
+      "name": "te-macros",
+      "description": "Import skill-ready Tabular Editor 3 macros from GitHub and turn them into Claude skills that run through the Tabular Editor CLI.",
+      "source": "./plugins/te-macros"
+    }
+  ]
+}
