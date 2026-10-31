@@ -173,10 +173,10 @@ foreach ($i in $imports) {
     if (-not $i.Errors) {
         $target = $match | Select-Object -First 1
         if ($target) {
-            if ($target.Name -ne $i.Name) { $changes += "name (was '$($target.Name)')" }
-            if ((Get-Contexts $target.ValidContexts) -ne $i.Contexts) { $changes += "contexts (was '$($target.ValidContexts)')" }
-            if ("$($target.Tooltip)" -ne $i.Tooltip) { $changes += 'tooltip' }
-            if (($target.Execute -replace "\r\n", "`n") -ne $i.Code) { $changes += 'code' }
+            if ($target.Name -cne $i.Name) { $changes += "name (was '$($target.Name)')" }
+            if ((Get-Contexts $target.ValidContexts) -cne $i.Contexts) { $changes += "contexts (was '$($target.ValidContexts)')" }
+            if ("$($target.Tooltip)" -cne $i.Tooltip) { $changes += 'tooltip' }
+            if (($target.Execute -replace "\r\n", "`n") -cne $i.Code) { $changes += 'code' }
             if (-not $changes) { $status = 'unchanged' }
             elseif ($PSCmdlet.ShouldProcess($target.Name, "Update macro ($($changes -join ', '))")) {
                 $target.Name = $i.Name; $target.ValidContexts = $i.Contexts; $target.Tooltip = $i.Tooltip; $target.Execute = $i.Code
