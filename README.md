@@ -6,6 +6,16 @@ If you'd like to use a script from this repository, simply copy the script conte
 
 **DISCLAIMER:** THE SCRIPTS IN THIS REPOSITORY ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. You are responsible for ensuring that any scripts you execute does not contain malicious code, or does not cause unwanted changes to your tabular models. If you do not understand what the code does, do not blindly execute it! A script has access to the full power of the .NET platform, meaning it can theoretically alter system files, download stuff from the internet, etc. Do not execute a script from sources you do not trust.
 
+## Using the skill-ready macros with Claude Code
+The macros in `Advanced/Skill-Ready Macros` work both as Tabular Editor 3 macros and as [Claude Code](https://claude.com/claude-code) skills that run on a semantic model through the Tabular Editor CLI. The `te-macros` plugin in this repository installs them:
+
+```
+/plugin marketplace add bernatagulloesbrina/TabularEditor-Scripts
+/plugin install te-macros@tabular-editor-scripts
+```
+
+Then ask Claude to "import the skill-ready macros and generate their skills". It adds the macros to Tabular Editor 3 (close it first) and generates one skill per macro in a local `macro-skills` plugin. Enable or disable those skills together with `/plugin`.
+
 ## How to contribute
 Fork the repo, add your scripts and submit a pull request - it's that simple!
 
