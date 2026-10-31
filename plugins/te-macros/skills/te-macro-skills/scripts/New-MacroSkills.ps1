@@ -111,7 +111,7 @@ function Test-MacroCompiles([string] $code) {
 }
 
 # --- Parse every macro with a SKILL header ---------------------------------------------------------
-$macros = (Get-Content $MacrosFile -Raw | ConvertFrom-Json).Actions
+$macros = (Get-Content $MacrosFile -Raw -Encoding UTF8 | ConvertFrom-Json).Actions
 $skills = foreach ($m in $macros) {
     $lines = @(Get-HeaderLines $m.Execute 'SKILL')
     if ($lines.Count -eq 0) { continue }
