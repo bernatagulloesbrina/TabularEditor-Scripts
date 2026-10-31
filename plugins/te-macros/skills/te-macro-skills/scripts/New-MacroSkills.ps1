@@ -292,8 +292,14 @@ if ($asPlugin -and -not $WhatIfPreference) {
     $installed = (Test-Path "$plugins\installed_plugins.json") -and
         (Get-Content "$plugins\installed_plugins.json" -Raw | ConvertFrom-Json).plugins.PSObject.Properties.Name -contains "$pluginName@$marketplaceName"
     if ($Register) {
-        if (-not $known) { & claude plugin marketplace add $PluginDir | Write-Host }
-        if (-not $installed) { & claude plugin install "$pluginName@$marketplaceName" --scope user | Write-Host }
+        if (-not $known) {
+            & claude plugin marketplace add $PluginDir | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "Failed to add the $marketplaceName marketplace (exit code $LASTEXITCODE)." }
+        }
+        if (-not $installed) {
+            & claude plugin install "$pluginName@$marketplaceName" --scope user | Write-Host
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install $pluginName@$marketplaceName (exit code $LASTEXITCODE)." }
+        }
     }
     elseif (-not ($known -and $installed)) {
         Write-Warning "The $pluginName plugin is not registered in Claude Code yet. Rerun with -Register, or run: claude plugin marketplace add `"$PluginDir`"; claude plugin install $pluginName@$marketplaceName"
