@@ -217,7 +217,7 @@ This skill runs the Tabular Editor 3 macro **$($s.MacroName)** through the Tabul
 3. **Dry run.** Nothing is saved; te prints the diff of every object the macro would create or change:
 
    ``````powershell
-   & "$runnerPath" -Path "<model>" -Env $envExample
+   & "$runnerPath" -Path "<model>" -MacrosFile "$(Get-DisplayPath ((Resolve-Path $MacrosFile).Path))" -Env $envExample
    ``````
 
    A non-zero exit code means te or the macro reported an error (a missing or unresolved input, for example). Fix the inputs and retry, or tell the user.
