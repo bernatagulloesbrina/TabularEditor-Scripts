@@ -1,7 +1,9 @@
+#if !TECLI
 #r "System.Drawing"
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
 using Microsoft.VisualBasic;
+#endif
 
 // MACRO: Name: Sum of Columns
 // MACRO: ValidContexts: Column
