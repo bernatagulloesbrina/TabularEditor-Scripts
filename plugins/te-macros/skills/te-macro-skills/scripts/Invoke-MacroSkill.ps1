@@ -18,7 +18,8 @@
   file, -TMDL for a TMDL / PBIP folder, and an incremental SaveChanges for a server or Power BI Desktop. TE2 doesn't
   validate DAX.
 
-  The engine comes from macro.json (chosen when the skill was generated); -Engine overrides it.
+  The default engine comes from macro.json (chosen when the skill was generated); when it isn't installed the runner
+  falls back to the other one. -Engine forces one (no fallback).
 
 .EXAMPLE
   .\Invoke-MacroSkill.ps1 -Path ".\Sales.SemanticModel" -Env @{ SUM_COLUMNS = "'Sales'[Amount];'Sales'[Qty]" }
@@ -48,27 +49,44 @@ $ErrorActionPreference = 'Stop'
 $utf8 = New-Object Text.UTF8Encoding($false)
 
 $meta = Get-Content (Join-Path $PSScriptRoot '..\macro.json') -Raw | ConvertFrom-Json
-if (-not $Engine) { $Engine = if ($meta.engine) { $meta.engine } else { 'te' } }
 if (-not $MacrosFile) {
     $MacrosFile = if ($meta.edition -eq 'TE2') { "$env:LOCALAPPDATA\TabularEditor\MacroActions.json" } else { "$env:LOCALAPPDATA\TabularEditor3\MacroActions.json" }
 }
 
-# Executable: parameter, then PATH, then the default install folders
-if (-not $TabularEditor) {
-    if ($Engine -eq 'te') {
+# Executable: PATH, then the default install folders
+function Find-Engine([string] $eng) {
+    if ($eng -eq 'te') {
         $onPath = Get-Command te.exe -ErrorAction SilentlyContinue
-        $TabularEditor = if ($onPath) { $onPath.Source } else { "$env:LOCALAPPDATA\Programs\TabularEditor3\te.exe" }
+        $exe = if ($onPath) { $onPath.Source } else { "$env:LOCALAPPDATA\Programs\TabularEditor3\te.exe" }
     }
     else {
         $onPath = Get-Command TabularEditor.exe -ErrorAction SilentlyContinue
-        $TabularEditor = if ($onPath) { $onPath.Source } else {
+        $exe = if ($onPath) { $onPath.Source } else {
             @("${env:ProgramFiles(x86)}\Tabular Editor\TabularEditor.exe", "$env:ProgramFiles\Tabular Editor\TabularEditor.exe") |
                 Where-Object { Test-Path $_ } | Select-Object -First 1
         }
     }
+    if ($exe -and (Test-Path $exe)) { $exe }
+}
+function Get-EngineName([string] $eng) { if ($eng -eq 'te') { 'Tabular Editor CLI (te.exe)' } else { 'Tabular Editor 2 (TabularEditor.exe)' } }
+
+# Engine: -Engine when given (no fallback), otherwise the skill's default (macro.json), falling back to the other
+# engine when the default isn't installed
+$explicitEngine = [bool] $Engine
+if (-not $Engine) { $Engine = if ($meta.engine) { $meta.engine } else { 'te' } }
+if (-not $TabularEditor) {
+    $TabularEditor = Find-Engine $Engine
+    if (-not $TabularEditor -and -not $explicitEngine) {
+        $other = if ($Engine -eq 'te') { 'te2' } else { 'te' }
+        $TabularEditor = Find-Engine $other
+        if ($TabularEditor) {
+            Write-Warning "$(Get-EngineName $Engine) not found: using $(Get-EngineName $other) instead."
+            $Engine = $other
+        }
+    }
 }
 if (-not $TabularEditor -or -not (Test-Path $TabularEditor)) {
-    throw "$(if ($Engine -eq 'te') { 'Tabular Editor CLI (te.exe)' } else { 'Tabular Editor 2 (TabularEditor.exe)' }) not found. Pass -TabularEditor, or -Engine $(if ($Engine -eq 'te') { 'te2' } else { 'te' }) to use the other one."
+    throw "$(Get-EngineName $Engine) not found. Pass -TabularEditor <path>$(if ($explicitEngine) { ", or -Engine $(if ($Engine -eq 'te') { 'te2' } else { 'te' }) to use the other one" })."
 }
 if (-not ($Path -or $Local -or $Server)) { throw "Pass one of -Path, -Local or -Server." }
 if ($Server -and -not $Database) { throw "-Database is required with -Server." }
@@ -210,7 +228,12 @@ try {
                 # Power BI Desktop: the port of each running instance is in its workspace folder
                 $ports = @(Get-ChildItem "$env:LOCALAPPDATA\Microsoft\Power BI Desktop\AnalysisServicesWorkspaces",
                     "$env:USERPROFILE\Microsoft\Power BI Desktop Store App\AnalysisServicesWorkspaces" -Recurse -Filter msmdsrv.port.txt -ErrorAction SilentlyContinue |
-                    ForEach-Object { (Get-Content $_.FullName -Raw -Encoding Unicode) -replace '\D', '' } | Where-Object { $_ } | Sort-Object -Unique)
+                    ForEach-Object { (Get-Content $_.FullName -Raw -Encoding Unicode) -replace '\D', '' } | Where-Object { $_ } | Sort-Object -Unique |
+                    Where-Object {
+                        # Closed instances can leave their port file behind: keep only the ports that accept connections
+                        $tcp = New-Object Net.Sockets.TcpClient
+                        try { $tcp.ConnectAsync('localhost', [int] $_).Wait(1000) -and $tcp.Connected } catch { $false } finally { $tcp.Dispose() }
+                    })
                 if ($ports.Count -eq 0) { throw "No running Power BI Desktop found." }
                 if ($ports.Count -gt 1) { throw "Several Power BI Desktop instances are running (ports $($ports -join ', ')). Close the others, or pass -Server localhost:<port> -Database <name>." }
                 $Server = "localhost:$($ports[0])"
