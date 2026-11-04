@@ -207,8 +207,9 @@ $skills = foreach ($m in $macros) {
     foreach ($v in $used | Where-Object { $documented -notcontains $_ }) { $s.Warnings += "$v is read in the code but not listed under ## Inputs" }
     foreach ($v in $documented | Where-Object { $used -notcontains $_ }) { $s.Warnings += "$v is listed under ## Inputs but not read in the code" }
     if (-not (@($body) -match '^##\s+Inputs')) { $s.Warnings += 'no "## Inputs" section' }
-    if ($Engine -eq 'te' -and $m.Execute -notmatch '#if\s+TECLI') { $s.Warnings += 'no #if TECLI block: in te the macro will run its interactive code' }
-    if ($Engine -eq 'te2' -and $m.Execute -notmatch 'IsCliMode\(') { $s.Warnings += 'no Fx.IsCliMode() check: in the TE2 command line the macro will run its interactive code and wait on dialogs' }
+    # Skills run on either engine (default, -Engine or fallback), so check both guards
+    if ($m.Execute -notmatch '#if\s+TECLI') { $s.Warnings += 'no #if TECLI block: in te the macro will run its interactive code' }
+    if ($m.Execute -notmatch 'IsCliMode\(') { $s.Warnings += 'no Fx.IsCliMode() check: in the TE2 command line the macro will run its interactive code and wait on dialogs' }
     if ($m.Enabled -eq 'false') { $s.Warnings += "macro is disabled in $Edition" }
     $s
 }
@@ -247,26 +248,21 @@ foreach ($s in $skills) {
         if ($envExample -eq '@{  }') { $envExample = '@{}' }
 
         $macrosFileText = '%LOCALAPPDATA%\' + (Split-Path (Split-Path $editionFiles[$Edition]) -Leaf) + '\MacroActions.json'
-        if ($Engine -eq 'te') {
-            $engineText = "through the Tabular Editor CLI (``te``). The macro code is read from ``$macrosFileText`` on every run, so edits made in $Edition apply at once. In te the macro is compiled with ``TECLI`` defined, which makes it read the inputs above from environment variables instead of the selection or dialogs."
-            $inspectText = 'for example `te ls -m <path>`'
-            $dryRunText = 'Nothing is saved; te prints the diff of every object the macro would create or change:'
-            $saveText = 'Add `-Force` only if the user accepts saving with DAX validation errors.'
-            $engineGotchas = @(
-                '- Saving a PBIP folder with te can rewrite a few more lines than the macro changed (`compatibilityMode` in `database.tmdl`, blank lines, line endings). Review `git diff` afterwards.'
-            )
-        }
-        else {
-            $engineText = "through the Tabular Editor 2 command line (``TabularEditor.exe``). The macro code is read from ``$macrosFileText`` on every run, so edits made in $Edition apply at once. The macro detects the command line at runtime, which makes it read the inputs above from environment variables instead of the selection or dialogs."
-            $inspectText = 'for example by reading the model''s TMDL files or `model.bim`'
-            $dryRunText = 'Nothing is saved; the runner prints every object the macro would create (`+`), change (`~`) or delete (`-`):'
-            $saveText = 'TE2 doesn''t validate DAX, so after saving ask the user to check the new or changed objects in Power BI.'
-            $engineGotchas = @(
-                '- With `-Local` only one Power BI Desktop may be open; otherwise pass `-Server localhost:<port> -Database <name>`.'
-                '- Saving a PBIP folder with TE2 can rewrite more lines of the TMDL files than the macro changed. Review `git diff` afterwards.'
-                '- If the runner stops TabularEditor.exe after the timeout, the macro is waiting on a dialog: one of its inputs isn''t CLI-ready. Tell the user; don''t retry.'
-            )
-        }
+        $defaultName = if ($Engine -eq 'te') { 'the Tabular Editor CLI (`te`)' } else { 'the Tabular Editor 2 command line (`TabularEditor.exe`)' }
+        $otherName = if ($Engine -eq 'te') { 'the Tabular Editor 2 command line (`TabularEditor.exe`)' } else { 'the Tabular Editor CLI (`te`)' }
+        $otherEngine = if ($Engine -eq 'te') { 'te2' } else { 'te' }
+        $askOther = if ($Engine -eq 'te') { 'Tabular Editor 2 or `TabularEditor.exe`' } else { 'the Tabular Editor CLI or `te`' }
+        $engineText = "through $defaultName by default. The macro code is read from ``$macrosFileText`` on every run, so edits made in $Edition apply at once. In ``te`` the macro is compiled with ``TECLI`` defined, and in ``TabularEditor.exe`` it detects the command line at runtime; either way it reads the inputs above from environment variables instead of the selection or dialogs.
+
+**Engine.** Add ``-Engine $otherEngine`` to every command below when the user asks to use $askOther; the runner then uses $otherName and doesn't fall back. Without ``-Engine``, if $defaultName isn't installed the runner warns and uses the other one: mention that to the user."
+        $inspectText = 'for example `te ls -m <path>`, or by reading the model''s TMDL files or `model.bim`'
+        $dryRunText = 'Nothing is saved. With `te` the runner prints te''s diff of every object the macro would create or change; with `TabularEditor.exe` it prints every object created (`+`), changed (`~`) or deleted (`-`):'
+        $saveText = 'With `te`, add `-Force` only if the user accepts saving with DAX validation errors. `TabularEditor.exe` doesn''t validate DAX, so after saving with it ask the user to check the new or changed objects in Power BI.'
+        $engineGotchas = @(
+            '- Saving a PBIP folder can rewrite more lines than the macro changed (with `te`: `compatibilityMode` in `database.tmdl`, blank lines, line endings; with `TabularEditor.exe`: more TMDL lines). Review `git diff` afterwards.'
+            '- `TabularEditor.exe` with `-Local`: only one Power BI Desktop may be open; otherwise pass `-Server localhost:<port> -Database <name>`.'
+            '- If the runner stops `TabularEditor.exe` after the timeout, the macro is waiting on a dialog: one of its inputs isn''t CLI-ready. Tell the user; don''t retry.'
+        )
 
         $skillMd = @"
 ---
@@ -298,7 +294,7 @@ This skill runs the $editionName macro **$($s.MacroName)** $engineText
    & "$runnerPath" -Path "<model>" -MacrosFile "$(Get-DisplayPath ((Resolve-Path $MacrosFile).Path))" -Env $envExample
    ``````
 
-   A non-zero exit code means $(if ($Engine -eq 'te') { 'te' } else { 'TabularEditor.exe' }) or the macro reported an error (a missing or unresolved input, for example). Fix the inputs and retry, or tell the user.
+   A non-zero exit code means the engine or the macro reported an error (a missing or unresolved input, for example). Fix the inputs and retry, or tell the user.
 
 4. **Summarize the diff for the user and get confirmation**, then run the same command with ``-Save``. $saveText
 
