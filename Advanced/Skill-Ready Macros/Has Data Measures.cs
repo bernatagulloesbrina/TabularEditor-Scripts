@@ -17,18 +17,30 @@ using Microsoft.VisualBasic;
 // SKILL:
 // SKILL: ## Notes
 // SKILL: The measure is named "<table> has data"; if a measure with that name already exists in the model, check with the user before running, since measure names must be unique. After running, tell the user to add the measure as a visual-level filter (is 1) on the slicers they want to restrict.
+// '2026-11-03 / B.Agullo / CLI mode is also detected at runtime, so the macro runs unattended in the TE2 command line (-S)
 // '2026-11-01 / B.Agullo / Agent ready: in CLI mode the tables come from the HD_TABLES environment variable
 // '2023-06-08 / B.Agullo / Creates a measure to show only relevant items in slicers for a fact table.
 #if TECLI
-var tables = Fx.GetTablesFromEnv(Model, "HD_TABLES");
-if (tables == null) return;
+bool cliMode = true;
 #else
-if(Selected.Tables.Count() == 0)
+bool cliMode = Fx.IsCliMode();
+#endif
+List<Table> tables = null;
+if (cliMode)
 {
-    Error("Select at least one table and try again");
-    return;
+    tables = Fx.GetTablesFromEnv(Model, "HD_TABLES");
+    if (tables == null) return;
 }
-var tables = Selected.Tables.ToList();
+#if !TECLI
+else
+{
+    if(Selected.Tables.Count() == 0)
+    {
+        Error("Select at least one table and try again");
+        return;
+    }
+    tables = Selected.Tables.ToList();
+}
 #endif
 foreach(Table table in tables)
 {
@@ -42,6 +54,16 @@ foreach(Table table in tables)
 public static class Fx
 {
     public const string DefaultSentinel = "<<USE_DEFAULT>>";
+#if !TECLI
+    // True when TE2 runs the script from the command line (-S / -SCRIPT). TE2 doesn't define TECLI and shows
+    // Select*/Choose* dialogs modally, which hangs an unattended run. Macros call it in the #else branch of #if TECLI
+    // (te is always CLI mode), so this method has no #if of its own.
+    public static bool IsCliMode()
+    {
+        return Environment.GetCommandLineArgs().Any(a =>
+            a.Equals("-S", StringComparison.OrdinalIgnoreCase) || a.Equals("-SCRIPT", StringComparison.OrdinalIgnoreCase));
+    }
+#endif
     // ENV helpers: used in the #if TECLI branch of macros so agents can pass inputs through environment variables.
     // Lists are separated by ';'. All return null (after an Error) when the variable is missing or a value can't be resolved,
     // except when a defaultValue is given, which is used if the variable is missing or empty.

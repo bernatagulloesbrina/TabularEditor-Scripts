@@ -1,14 +1,20 @@
 <#
 .SYNOPSIS
-  Imports skill-ready macros from a GitHub folder (or a local folder) into Tabular Editor 3's MacroActions.json.
+  Imports skill-ready macros from a GitHub folder (or a local folder) into the MacroActions.json of every installed
+  Tabular Editor (3 and 2).
 
 .DESCRIPTION
   Reads every *.csx / *.cs file in the source and imports those with a "// MACRO: Name:" line. The whole file
   becomes the macro code; Name, ValidContexts and Tooltip come from the "// MACRO:" lines.
 
+  The targets are the MacroActions.json files in %LOCALAPPDATA%\TabularEditor3 (TE3) and %LOCALAPPDATA%\TabularEditor
+  (TE2), for each edition whose settings folder exists (it is created the first time that edition runs). A missing
+  MacroActions.json is created. -MacrosFile overrides the targets.
+
   An existing macro is updated when it carries the same "// SKILL: name:" as the file or, failing that, the same
   macro name. Its name, contexts, tooltip and code are then replaced by the file's. Other macros are not touched.
-  The macros file is backed up before it is written.
+  Each macros file is backed up before it is written, and keeps its edition's format (TE3: Id per macro and LF line
+  breaks; TE2: no Id and CRLF line breaks).
 
   Source can be:
     https://github.com/<owner>/<repo>                      (repository root, default branch)
@@ -28,13 +34,14 @@
 param(
     [Parameter(Position = 0)]
     [string] $Source = 'https://github.com/bernatagulloesbrina/TabularEditor-Scripts/tree/main/Advanced/Skill-Ready%20Macros',
-    [string] $MacrosFile = "$env:LOCALAPPDATA\TabularEditor3\MacroActions.json",
+    # Macros files to import into. Default: the MacroActions.json of every installed Tabular Editor (3 and 2)
+    [string[]] $MacrosFile,
     [string[]] $Include = @('*.csx', '*.cs'),
     # Include subfolders
     [switch] $Recurse,
     # Import only these macro or skill names
     [string[]] $Only,
-    # Write even though Tabular Editor 3 is running
+    # Write even though Tabular Editor is running
     [switch] $Force
 )
 
@@ -43,7 +50,28 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $utf8Bom = New-Object Text.UTF8Encoding($true)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-if (-not (Test-Path $MacrosFile)) { throw "Macros file not found: $MacrosFile" }
+# --- Targets -------------------------------------------------------------------------------------------
+# Each edition keeps its settings, MacroActions.json included, in its own folder under %LOCALAPPDATA%
+$editions = @(
+    [pscustomobject]@{ Edition = 'TE3'; Folder = "$env:LOCALAPPDATA\TabularEditor3"; Process = 'TabularEditor3'; Ids = $true; NewLine = "`n" }
+    [pscustomobject]@{ Edition = 'TE2'; Folder = "$env:LOCALAPPDATA\TabularEditor"; Process = 'TabularEditor'; Ids = $false; NewLine = "`r`n" }
+)
+if ($MacrosFile) {
+    $targets = foreach ($m in $MacrosFile) {
+        if (-not (Test-Path $m)) { throw "Macros file not found: $m" }
+        $path = (Resolve-Path $m).Path
+        $e = $editions | Where-Object { (Split-Path $path) -eq $_.Folder } | Select-Object -First 1
+        if (-not $e) { $e = [pscustomobject]@{ Edition = 'file'; Process = $null; Ids = $true; NewLine = "`n" } }
+        [pscustomobject]@{ Edition = $e.Edition; Path = $path; Process = $e.Process; Ids = $e.Ids; NewLine = $e.NewLine }
+    }
+}
+else {
+    $targets = foreach ($e in $editions | Where-Object { Test-Path $_.Folder }) {
+        [pscustomobject]@{ Edition = $e.Edition; Path = Join-Path $e.Folder 'MacroActions.json'; Process = $e.Process; Ids = $e.Ids; NewLine = $e.NewLine }
+    }
+    if (-not $targets) { throw "No Tabular Editor found: neither $($editions.Folder -join ' nor ') exists. Run Tabular Editor once, or pass -MacrosFile." }
+}
+$targets = @($targets)
 
 # Header lines of one kind ("SKILL" / "MACRO"), without the prefix and its first space
 function Get-HeaderLines([string] $code, [string] $kind) {
@@ -124,10 +152,6 @@ else { throw "Source must be a github.com URL or an existing local path: $Source
 if ($files.Count -eq 0) { Write-Host "No $($Include -join ' / ') files in $Source"; exit 0 }
 
 # --- Parse ---------------------------------------------------------------------------------------------
-$data = Get-Content $MacrosFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$actions = New-Object Collections.Generic.List[object]
-foreach ($a in @($data.Actions)) { $actions.Add($a) }
-
 $imports = foreach ($f in $files) {
     $code = ($f.Text.TrimStart([char]0xFEFF) -replace "\r\n", "`n")
     $i = [pscustomobject]@{
@@ -141,6 +165,17 @@ $imports = foreach ($f in $files) {
     if (-not $i.Contexts) { $i.Contexts = 'Model'; $i.Warnings += 'no "// MACRO: ValidContexts:" line, using Model' }
     if ($null -eq $i.Tooltip) { $i.Tooltip = '' }
     if (-not $i.Skill) { $i.Warnings += 'no "// SKILL: name:" line: imported as a macro only, no skill will be generated' }
+    # TE3 moves every #r / using directive to the top of the compiled macros file: one inside #if leaves its
+    # #endif behind ("Unexpected preprocessor directive") and then no macro loads at all
+    $depth = 0
+    foreach ($line in ($code -split "`n" | ForEach-Object { $_.Trim() })) {
+        if ($line -match '^#if\b') { $depth++ }
+        elseif ($line -match '^#endif\b') { $depth-- }
+        elseif ($depth -gt 0 -and $line -match '^(#r\s|using\s+(static\s+)?[\w.]+(\s*=\s*[\w.<>, ]+)?\s*;$)') {
+            $i.Errors += "'$line' is inside an #if block: TE3 would fail to load every macro. Move the #r / using directives out of #if / #endif"
+            break
+        }
+    }
     $i
 }
 if ($Only) { $imports = @($imports | Where-Object { $Only -contains $_.Name -or $Only -contains $_.Skill }) }
@@ -153,65 +188,81 @@ foreach ($dup in $imports | Where-Object Skill | Group-Object Skill | Where-Obje
 }
 
 # --- Merge ---------------------------------------------------------------------------------------------
-$tePath = (Resolve-Path $MacrosFile).Path
-$teRunning = $tePath -like "$env:LOCALAPPDATA\TabularEditor3\*" -and (Get-Process TabularEditor3 -ErrorAction SilentlyContinue)
+# Every target is merged in memory first, so nothing is written when an editor that needs closing is running
 $report = New-Object Collections.Generic.List[object]
-$dirty = $false
 
-foreach ($i in $imports) {
-    $status = 'skipped'; $changes = @()
-    if (-not $i.Name) {
-        $report.Add([pscustomobject]@{ Macro = $null; Skill = $null; Status = 'ignored'; Changes = ''; File = $i.File; Problems = $i.Warnings[0] })
-        continue
-    }
-    if (-not $i.Errors) {
-        $match = @()
-        if ($i.Skill) { $match = @($actions | Where-Object { (Get-HeaderValue $_.Execute 'SKILL' 'name') -eq $i.Skill }) }
-        if ($match.Count -eq 0) { $match = @($actions | Where-Object { $_.Name -eq $i.Name }) }
-        if ($match.Count -gt 1) { $i.Errors += "several macros match: $(($match | ForEach-Object { $_.Name }) -join ', ')" }
-    }
-    if (-not $i.Errors) {
-        $target = $match | Select-Object -First 1
-        if ($target) {
-            if ($target.Name -cne $i.Name) { $changes += "name (was '$($target.Name)')" }
-            if ((Get-Contexts $target.ValidContexts) -cne $i.Contexts) { $changes += "contexts (was '$($target.ValidContexts)')" }
-            if ("$($target.Tooltip)" -cne $i.Tooltip) { $changes += 'tooltip' }
-            if (($target.Execute -replace "\r\n", "`n") -cne $i.Code) { $changes += 'code' }
-            if (-not $changes) { $status = 'unchanged' }
-            elseif ($PSCmdlet.ShouldProcess($target.Name, "Update macro ($($changes -join ', '))")) {
-                $target.Name = $i.Name; $target.ValidContexts = $i.Contexts; $target.Tooltip = $i.Tooltip; $target.Execute = $i.Code
-                $status = 'updated'; $dirty = $true
+foreach ($t in $targets) {
+    $data = if (Test-Path $t.Path) { Get-Content $t.Path -Raw -Encoding UTF8 | ConvertFrom-Json } else { [pscustomobject]@{ Actions = @() } }
+    $actions = New-Object Collections.Generic.List[object]
+    foreach ($a in @($data.Actions)) { $actions.Add($a) }
+    $t | Add-Member Data $data
+    $t | Add-Member Actions $actions
+    $t | Add-Member Dirty $false
+    $t | Add-Member Running ([bool]($t.Process -and (Get-Process $t.Process -ErrorAction SilentlyContinue)))
+
+    foreach ($i in $imports) {
+        $status = 'skipped'; $changes = @(); $problems = @($i.Errors)
+        if (-not $i.Name) {
+            $report.Add([pscustomobject]@{ Target = $t.Edition; Macro = $null; Skill = $null; Status = 'ignored'; Changes = ''; File = $i.File; Problems = $i.Warnings[0] })
+            continue
+        }
+        if (-not $problems) {
+            $match = @()
+            if ($i.Skill) { $match = @($actions | Where-Object { (Get-HeaderValue $_.Execute 'SKILL' 'name') -eq $i.Skill }) }
+            if ($match.Count -eq 0) { $match = @($actions | Where-Object { $_.Name -eq $i.Name }) }
+            if ($match.Count -gt 1) { $problems += "several macros match: $(($match | ForEach-Object { $_.Name }) -join ', ')" }
+        }
+        if (-not $problems) {
+            $code = $i.Code -replace "`n", $t.NewLine
+            $target = $match | Select-Object -First 1
+            if ($target) {
+                if ($target.Name -cne $i.Name) { $changes += "name (was '$($target.Name)')" }
+                if ((Get-Contexts $target.ValidContexts) -cne $i.Contexts) { $changes += "contexts (was '$($target.ValidContexts)')" }
+                if ("$($target.Tooltip)" -cne $i.Tooltip) { $changes += 'tooltip' }
+                if (($target.Execute -replace "\r\n", "`n") -cne $i.Code) { $changes += 'code' }
+                if (-not $changes) { $status = 'unchanged' }
+                elseif ($PSCmdlet.ShouldProcess("$($target.Name) ($($t.Edition))", "Update macro ($($changes -join ', '))")) {
+                    $target.Name = $i.Name; $target.ValidContexts = $i.Contexts; $target.Tooltip = $i.Tooltip; $target.Execute = $code
+                    $status = 'updated'; $t.Dirty = $true
+                }
+                else { $status = 'would update' }
             }
-            else { $status = 'would update' }
+            elseif ($PSCmdlet.ShouldProcess("$($i.Name) ($($t.Edition))", 'Create macro')) {
+                $new = [ordered]@{}
+                if ($t.Ids) { $new.Id = [int](1 + ($actions | ForEach-Object { [int]$_.Id } | Measure-Object -Maximum).Maximum) }
+                $new.Name = $i.Name; $new.Enabled = 'true'; $new.Execute = $code; $new.Tooltip = $i.Tooltip; $new.ValidContexts = $i.Contexts
+                $actions.Add([pscustomobject]$new)
+                $status = 'created'; $t.Dirty = $true
+            }
+            else { $status = 'would create' }
         }
-        elseif ($PSCmdlet.ShouldProcess($i.Name, 'Create macro')) {
-            $id = 1 + ($actions | ForEach-Object { [int]$_.Id } | Measure-Object -Maximum).Maximum
-            $actions.Add([pscustomobject][ordered]@{
-                Id = [int]$id; Name = $i.Name; Enabled = 'true'; Execute = $i.Code; Tooltip = $i.Tooltip; ValidContexts = $i.Contexts
-            })
-            $status = 'created'; $dirty = $true
-        }
-        else { $status = 'would create' }
-    }
 
-    $report.Add([pscustomobject]@{
-        Macro = $i.Name; Skill = $i.Skill; Status = $status; Changes = $changes -join ', '
-        File = $i.File; Problems = (@($i.Errors) + @($i.Warnings)) -join '; '
-    })
+        $report.Add([pscustomobject]@{
+            Target = $t.Edition; Macro = $i.Name; Skill = $i.Skill; Status = $status; Changes = $changes -join ', '
+            File = $i.File; Problems = (@($problems) + @($i.Warnings)) -join '; '
+        })
+    }
 }
 
-if ($dirty) {
-    if ($teRunning -and -not $Force) {
-        throw "Tabular Editor 3 is running. Close it and run again (or pass -Force): it only loads macros at startup, and saving a macro there would overwrite the imported ones."
-    }
-    $backup = "$tePath.$(Get-Date -Format yyyyMMdd-HHmmss).bak"
-    Copy-Item $tePath $backup
-    $data.Actions = $actions.ToArray()
-    [IO.File]::WriteAllText($tePath, ($data | ConvertTo-Json -Depth 5), $utf8Bom)
-    Write-Host "Saved $tePath (backup: $backup)"
+$blocking = @($targets | Where-Object { $_.Dirty -and $_.Running })
+if ($blocking -and -not $Force) {
+    throw "$(($blocking | ForEach-Object { "$($_.Process).exe" }) -join ' and ') running. Close it and run again (or pass -Force): Tabular Editor only loads macros at startup, and saving a macro there would overwrite the imported ones. Nothing was written."
 }
-elseif ($teRunning -and @($report | Where-Object Status -like 'would*').Count -gt 0) {
-    Write-Warning 'Tabular Editor 3 is running: close it before importing.'
+foreach ($t in $targets | Where-Object Dirty) {
+    if (Test-Path $t.Path) {
+        $backup = "$($t.Path).$(Get-Date -Format yyyyMMdd-HHmmss).bak"
+        Copy-Item $t.Path $backup
+        $backupNote = "backup: $backup"
+    }
+    else { $backupNote = 'new file' }
+    $t.Data.Actions = $t.Actions.ToArray()
+    [IO.File]::WriteAllText($t.Path, ($t.Data | ConvertTo-Json -Depth 5), $utf8Bom)
+    Write-Host "Saved $($t.Edition) macros: $($t.Path) ($backupNote)"
+}
+foreach ($t in $targets | Where-Object { $_.Running -and -not $_.Dirty }) {
+    if (@($report | Where-Object { $_.Target -eq $t.Edition -and $_.Status -like 'would*' }).Count -gt 0) {
+        Write-Warning "$($t.Process).exe is running: close it before importing."
+    }
 }
 
 $report

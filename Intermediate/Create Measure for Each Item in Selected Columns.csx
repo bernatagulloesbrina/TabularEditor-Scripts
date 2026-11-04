@@ -14,7 +14,7 @@ foreach (var c in Selected.Columns)
     string MyColumn = c.DaxObjectFullName;
     string GetItems = "EVALUATE VALUES (" + MyColumn + ")"; // List of items from column
 
-    using (var reader = Model.Database.ExecuteReader(GetItems))
+    using (var reader = ExecuteReader(GetItems))
     {
 
         // Create a loop for every row in the resultset

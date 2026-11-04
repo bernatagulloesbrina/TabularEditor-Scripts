@@ -92,7 +92,7 @@ String filterQuery = String.Format("EVALUATE DISTINCT({0})", filterColumn.DaxObj
 
 List<String> filterValues = new List<String>();
 
-using (var filterReader = Model.Database.ExecuteReader(filterQuery))
+using (var filterReader = ExecuteReader(filterQuery))
 {
 
     while (filterReader.Read())
@@ -174,7 +174,7 @@ foreach (Measure m in Selected.Measures)
 
 
                
-                using (var reader = Model.Database.ExecuteReader(measureNameQuery))
+                using (var reader = ExecuteReader(measureNameQuery))
                 {
                     while (reader.Read())
                     {
@@ -209,7 +209,7 @@ foreach (Measure m in Selected.Measures)
                 );
 
                 /*executes the query*/
-                using (var reader = Model.Database.ExecuteReader(query))
+                using (var reader = ExecuteReader(query))
                 {
                     // resultset should contain just one row, with the format string
                     while (reader.Read())

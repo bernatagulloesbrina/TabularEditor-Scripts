@@ -17,14 +17,26 @@ using Microsoft.VisualBasic;
 // SKILL:
 // SKILL: ## Notes
 // SKILL: Copies FormatString and DisplayFolder from the column and hides the base column.
+// '2026-11-03 / B.Agullo / CLI mode is also detected at runtime, so the macro runs unattended in the TE2 command line (-S)
 // '2026-10-28 / B.Agullo / Agent ready: in CLI mode the columns come from the SUM_COLUMNS environment variable
 // '2026-02-20 / B.Agullo / Added Properties annotation
 // '1990-01-01 / D.Otykier
 #if TECLI
-var columns = Fx.GetColumnsFromEnv(Model, "SUM_COLUMNS");
-if (columns == null) return;
+bool cliMode = true;
 #else
-var columns = Selected.Columns.ToList();
+bool cliMode = Fx.IsCliMode();
+#endif
+List<Column> columns = null;
+if (cliMode)
+{
+    columns = Fx.GetColumnsFromEnv(Model, "SUM_COLUMNS");
+    if (columns == null) return;
+}
+#if !TECLI
+else
+{
+    columns = Selected.Columns.ToList();
+}
 #endif
 // Loop through all target columns:
 foreach(var c in columns)
@@ -47,6 +59,16 @@ foreach(var c in columns)
 public static class Fx
 {
     public const string DefaultSentinel = "<<USE_DEFAULT>>";
+#if !TECLI
+    // True when TE2 runs the script from the command line (-S / -SCRIPT). TE2 doesn't define TECLI and shows
+    // Select*/Choose* dialogs modally, which hangs an unattended run. Macros call it in the #else branch of #if TECLI
+    // (te is always CLI mode), so this method has no #if of its own.
+    public static bool IsCliMode()
+    {
+        return Environment.GetCommandLineArgs().Any(a =>
+            a.Equals("-S", StringComparison.OrdinalIgnoreCase) || a.Equals("-SCRIPT", StringComparison.OrdinalIgnoreCase));
+    }
+#endif
     // ENV helpers: used in the #if TECLI branch of macros so agents can pass inputs through environment variables.
     // Lists are separated by ';'. All return null (after an Error) when the variable is missing or a value can't be resolved,
     // except when a defaultValue is given, which is used if the variable is missing or empty.

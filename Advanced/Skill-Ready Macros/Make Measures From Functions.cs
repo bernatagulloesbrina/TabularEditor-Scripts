@@ -4,7 +4,40 @@ using System.Windows.Forms;
 using Microsoft.VisualBasic;
 using System.Text.RegularExpressions;
 
-//2026-06-29 / B.Agullo / added support for optional parameters, parameter description and more
+// MACRO: Name: Make Measures From Functions
+// MACRO: ValidContexts: Function
+// MACRO: Tooltip: Creates measures (or calculated columns) by calling the selected DAX user-defined functions with every combination of the chosen objects
+// SKILL: name: make-measures-from-functions
+// SKILL: description: Create measures (or calculated columns) from DAX user-defined functions (UDFs), calling each function with every combination of the given measures, columns, tables, calendars or values. Use when the user asks to create measures from functions or UDFs, apply a UDF to several measures, generate time intelligence / variance measures with a function, or bulk-create measures with a function.
+// SKILL:
+// SKILL: For each function, builds one call per combination of the values given for its parameters (e.g. 3 measures x 2 calendars = 6 measures) and creates a measure, or a calculated column, with expression Function(arg1, arg2, ...). Name, format string, display folder, destination table, Properties / PropertyNames annotations and data category come from templates stored as annotations on the function (nameTemplate, formatString, displayFolder, outputDestination, outputProperties, outputPropertyNames, dataCategory, outputType). Placeholders such as <param>Name, <param>FormatStringFull, <param>FormatStringRoot, <param>DisplayFolder, <param>Table, <param>Properties, <param>PropertyNames and <param>DataCategory are replaced with the properties of each object passed. Measures get their DAX formatted and a description pointing to the function.
+// SKILL:
+// SKILL: ## Inputs (environment variables)
+// SKILL: Set these variables before running the macro. Work out each value from the conversation and the model (inspect the model if needed); if a value is unclear, ask the user instead of guessing.
+// SKILL: - MF_FUNCTIONS (required): function names separated by ';', e.g. Local.TimeIntel.YTD. The functions to call.
+// SKILL: - MF_PARAM_<PARAM> (required, one per distinct parameter name across the functions; <PARAM> is the parameter name in upper case, e.g. MF_PARAM_BASEMEASURE for baseMeasure): the values to iterate for that parameter, separated by ';'. Format by kind: measures as [Measure] or 'Table'[Measure]; columns as 'Table'[Column]; tables as 'Table'; calendars as the calendar name; Scalar as literal DAX values (e.g. 0.5); Text as plain text (it is quoted automatically). Leave it unset or empty to omit the argument and use the parameter's default value, which is only allowed when the parameter has one (param: TYPE = default).
+// SKILL: - MF_PARAM_<PARAM>_TYPE (required only when the kind can't be inferred): Table, Column, Measure, Calendar, Scalar or Text. The kind is inferred from the parameter type (measureRef, columnRef, tableRef, calendarRef) or from its name (contains MEASURE, COLUMN, TABLE, TEXT or STRING, or ends with CALENDAR); set this variable only for parameters where neither applies (e.g. a numeric anyVal parameter named threshold -> Scalar).
+// SKILL: - MF_DESTINATION_TABLE (optional, needed only in this case): 'Table' or table name. The table that receives the measures or columns whose destination template doesn't resolve to a model table, e.g. when the destination is "Custom". Leave unset otherwise.
+// SKILL: - Output settings, one set per function (optional): <FN> is the function name in upper case with every character that is not a letter or digit replaced by '_', e.g. LOCAL_TIMEINTEL_YTD for Local.TimeIntel.YTD. When a variable is unset, the function's annotation is used, or the default below if the function has no such annotation. The values used are saved as annotations on the function, so the next run reuses them.
+// SKILL:   - MF_OUTPUT_TYPE_<FN> (annotation outputType, default "Measure"): Measure, Column, Table or None. Only Measure and Column are implemented.
+// SKILL:   - MF_NAME_TEMPLATE_<FN> (annotation nameTemplate): name of each object. Default "<p1>Name <p2>Name ... <short>", or the function name if it has no parameters.
+// SKILL:   - MF_FORMAT_STRING_<FN> (annotation formatString): format string. Default "+0.0%;-0.0%;-" if the function name contains Pct, otherwise "<p1>FormatStringFull" (format of the first argument); empty if no parameters.
+// SKILL:   - MF_DISPLAY_FOLDER_<FN> (annotation displayFolder): display folder. Default "<p1>DisplayFolder/<p1>Name <group>"; empty if no parameters.
+// SKILL:   - MF_DESTINATION_<FN> (annotation outputDestination, Measure and Column only): destination table. Default "<p1>" if the first parameter name contains TABLE, "<p1>Table" (table of the first argument) if it contains MEASURE or COLUMN, otherwise "Custom" (then MF_DESTINATION_TABLE is needed). A literal 'Table' reference also works.
+// SKILL:   - MF_PROPERTIES_<FN> (annotation outputProperties): value of the Properties annotation of each object. Default "<p1>Name|<p2>Name|...|<short>", or "<short>" if no parameters.
+// SKILL:   - MF_PROPERTY_NAMES_<FN> (annotation outputPropertyNames): value of the PropertyNames annotation. Default "<p1>|<p2>|...|<group>", or "<short>" if no parameters.
+// SKILL:   - MF_DATA_CATEGORY_<FN> (annotation dataCategory, Measure only, default "Uncategorized"): Uncategorized, Address, Place, City, County, StateOrProvince, PostalCode, Country, Continent, Latitude, Longitude, WebUrl, ImageUrl, Barcode, or <p>DataCategory for a measure or column parameter (copies the category of the argument).
+// SKILL:   In the defaults, <p1>, <p2>... are the parameter names in order, <short> is the part of the function name after the last '.', and <group> is the second dot-separated part of the function name (the whole name if it has no '.'). Templates can use these placeholders for any parameter <p>: <p>Name, <p>FormatStringFull, <p>FormatStringRoot (first section of the format, without '+'), <p>DisplayFolder, <p>Table, <p>Properties, <p>PropertyNames, <p>DataCategory.
+// SKILL:
+// SKILL: ## Before running: confirm the output settings with the user
+// SKILL: Read each function's expression and its annotations. For every function, show the user the output settings that will be used (from the annotation if it exists, otherwise the default above), together with an example of the resulting measure name, format and folder for one combination of arguments. Ask the user to confirm them or say what to change, and set the matching MF_..._<FN> variables only for what they change. Do not run the macro until the user has confirmed.
+// SKILL:
+// SKILL: ## Notes
+// SKILL: The MF_PARAM_... and MF_..._<FN> variable names depend on the functions, so the runner warns that they are "not an input" of this skill; that warning is expected and the variables are still passed to the macro. Check that the generated names don't clash with existing measures: measure names must be unique in the model. The number of objects created is the product of the value counts of all parameters, so tell the user the total before running. Values are split on ';', so a single text value can't contain ';'.
+// '2026-11-03 / B.Agullo / CLI mode is also detected at runtime, so the macro runs unattended in the TE2 command line (-S)
+// '2026-11-01 / B.Agullo / Agent ready: in CLI mode functions, parameter values, destination table and output settings come from environment variables
+// '2026-11-01 / B.Agullo / Measure and Uncategorized are preselected when asking for the output type and data category
+//2026-10-15 / B.Agullo / added support for dataCategory annotation (measures only)
 //2026-03-29 / B.Agullo / added support for propertyNames annotation
 //2026-02-15 / B.Agullo / improved default function annotation values and added support for output properties annotation.
 //2025-09-26/B.Agullo/ fixed bug that would not store annotations if initialized during runtime
@@ -32,19 +65,48 @@ ScriptHelper.WaitFormVisible = false;
 // - All Fx.SelectAnyObjects calls must use parameter names on the call.
 // - The dictionary is Dictionary<string, IList<string>> parameterObjectsMap.
 // - Abort execution if any required selection is cancelled.
-// Validate selection
-if (Selected.Functions.Count() == 0)
+#if TECLI
+bool cliMode = true;
+#else
+bool cliMode = Fx.IsCliMode();
+#endif
+List<Function> functions = null;
+if (cliMode)
 {
-    Error("Select one or more functions and try again.");
-    return;
+    functions = Fx.GetFunctionsFromEnv(Model, "MF_FUNCTIONS");
+    if (functions == null) return;
 }
+#if !TECLI
+else
+{
+    // Validate selection
+    if (Selected.Functions.Count() == 0)
+    {
+        Error("Select one or more functions and try again.");
+        return;
+    }
+    functions = Selected.Functions.ToList();
+}
+#endif
 // Create FunctionExtended objects for each selected function and store them for later iteration
 IList<FunctionExtended> selectedFunctions = new List<FunctionExtended>();
-foreach (var f in Selected.Functions)
+foreach (var f in functions)
 {
     // Create the FunctionExtended and add to list
-    FunctionExtended fe = FunctionExtended.CreateFunctionExtended(f);
-    if (fe == null) return; 
+    FunctionExtended fe = null;
+    if (cliMode)
+    {
+        // output settings come from MF_<KEY>_<FUNCTION> variables
+        string outputSettingsPrefix = "MF";
+        fe = FunctionExtended.CreateFunctionExtendedFromEnv(f, outputSettingsPrefix);
+    }
+#if !TECLI
+    else
+    {
+        fe = FunctionExtended.CreateFunctionExtended(f);
+    }
+#endif
+    if (fe == null) return;
     selectedFunctions.Add(fe);
 }
 // Flatten all parameters from selected functions
@@ -81,15 +143,80 @@ foreach (var param in distinctParameters)
     {
         selectionType = "Text";
     }
-    (IList<string> Values, string Type) selectedObjectsForParam = Fx.SelectAnyObjects(
-        Model,
-        selectionType: selectionType,
-        prompt1: String.Format(@"Select object type for {0} parameter", param.Name),
-        prompt2: String.Format(@"Select item for {0} parameter", param.Name),
-        placeholderValue: param.Name,
-        defaultValue: param.DefaultValue,
-        description: param.Description
-    );
+    (IList<string> Values, string Type) selectedObjectsForParam = (null, null);
+    if (cliMode)
+    {
+        string paramEnvVar = "MF_PARAM_" + param.Name.ToUpper();
+        if (selectionType == null)
+        {
+            IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "Calendar", "Scalar", "Text" };
+            selectionType = Fx.GetStringFromEnv(paramEnvVar + "_TYPE");
+            if (selectionType == null) return;
+            if (!selectionTypeOptions.Contains(selectionType))
+            {
+                Error(String.Format("Environment variable {0}_TYPE must be one of {1}, not '{2}'.", paramEnvVar, String.Join(", ", selectionTypeOptions), selectionType));
+                return;
+            }
+        }
+        // Unset or empty with a parameter default: the argument is left blank so the default is used
+        string paramEnvValue = Fx.GetStringFromEnv(paramEnvVar, defaultValue: param.DefaultValue != null ? "" : null);
+        if (paramEnvValue == null) return;
+        IList<string> paramValues = null;
+        if (paramEnvValue == "")
+        {
+            paramValues = new List<string>() { "" };
+        }
+        else if (selectionType == "Measure")
+        {
+            var measures = Fx.GetMeasuresFromEnv(Model, paramEnvVar);
+            if (measures == null) return;
+            paramValues = measures.Select(m => m.DaxObjectFullName).ToList();
+        }
+        else if (selectionType == "Column")
+        {
+            var columns = Fx.GetColumnsFromEnv(Model, paramEnvVar);
+            if (columns == null) return;
+            paramValues = columns.Select(c => c.DaxObjectFullName).ToList();
+        }
+        else if (selectionType == "Table")
+        {
+            var tables = Fx.GetTablesFromEnv(Model, paramEnvVar);
+            if (tables == null) return;
+            paramValues = tables.Select(t => t.DaxObjectFullName).ToList();
+        }
+        else if (selectionType == "Calendar")
+        {
+            var calendars = Fx.GetCalendarsFromEnv(Model, paramEnvVar);
+            if (calendars == null) return;
+            paramValues = calendars.Select(c => "'" + c.Name + "'").ToList();
+        }
+        else if (selectionType == "Text")
+        {
+            // Wrap in double quotes if not already a quoted DAX string literal
+            paramValues = Fx.GetStringsFromEnv(paramEnvVar)
+                .Select(t => t.StartsWith("\"") && t.EndsWith("\"") ? t : "\"" + t + "\"")
+                .ToList();
+        }
+        else
+        {
+            paramValues = Fx.GetStringsFromEnv(paramEnvVar);
+        }
+        selectedObjectsForParam = (paramValues, selectionType);
+    }
+#if !TECLI
+    else
+    {
+        selectedObjectsForParam = Fx.SelectAnyObjects(
+            Model,
+            selectionType: selectionType,
+            prompt1: String.Format(@"Select object type for {0} parameter", param.Name),
+            prompt2: String.Format(@"Select item for {0} parameter", param.Name),
+            placeholderValue: param.Name,
+            defaultValue: param.DefaultValue,
+            description: param.Description
+        );
+    }
+#endif
     if (selectedObjectsForParam.Values == null || selectedObjectsForParam.Type == null) return; //user cancelled
     parameterObjectsMap[param.Name] = selectedObjectsForParam;
 }
@@ -112,6 +239,8 @@ foreach (var func in selectedFunctions)
     IList<string> currentOutputProperties = new List<string>();
     IList<string> previousOutputPropertyNames = new List<string>() { func.OutputPropertyNames };
     IList<string> currentOutputPropertyNames = new List<string>();
+    IList<string> previousDataCategories = new List<string>() { func.OutputDataCategory ?? "" };
+    IList<string> currentDataCategories = new List<string>();
     // When iterating the parameters of this specific function, use the mapping created for distinct parameters.
     foreach (var param in func.Parameters)
     {
@@ -122,6 +251,7 @@ foreach (var func in selectedFunctions)
         currentDisplayFolders = new List<string>();
         currentOutputProperties = new List<string>();
         currentOutputPropertyNames = new List<string>();
+        currentDataCategories = new List<string>();
         // Retrieve the objects list for this parameter name from the map (prompting was done earlier)
         (IList<string> Values, string Type) paramObject;
         if (!parameterObjectsMap.TryGetValue(param.Name, out paramObject) || paramObject.Type == null || paramObject.Values.Count == 0)
@@ -138,6 +268,7 @@ foreach (var func in selectedFunctions)
             string sDestination = previousDestinations[i];
             string sOutputProperties = previousOutputProperties[i];
             string sOutputPropertyNames = previousOutputPropertyNames[i];
+            string sDataCategory = previousDataCategories[i];
             foreach (var o in paramObject.Values)
             {
                 //extract original name and format string if the parameter is a measure
@@ -148,6 +279,7 @@ foreach (var func in selectedFunctions)
                 string paramTable = "";
                 string paramProperties = "";
                 string paramPropertyNames = "";
+                string paramDataCategory = "";
                 //prepare placeholder
                 string paramNamePlaceholder = param.Name + "Name";
                 string paramFormatStringRootPlaceholder = param.Name + "FormatStringRoot";
@@ -155,6 +287,7 @@ foreach (var func in selectedFunctions)
                 string paramDisplayFolderPlaceholder = param.Name + "DisplayFolder";
                 string paramPropertiesPlaceholder = param.Name + "Properties";
                 string paramPropertyNamesPlaceholder = param.Name + "PropertyNames";
+                string paramDataCategoryPlaceholder = param.Name + "DataCategory";
                 string paramTablePlaceholder = "";
                 // Empty value means the parameter default is used: keep the comma (blank arg)
                 bool useDefault = string.IsNullOrEmpty(o);
@@ -172,6 +305,7 @@ foreach (var func in selectedFunctions)
                     paramTable = m.Table.DaxObjectFullName;
                     paramProperties = m.GetAnnotation("Properties") ?? "";
                     paramPropertyNames = m.GetAnnotation("PropertyNames") ?? "";
+                    paramDataCategory = m.DataCategory ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Column")
@@ -183,6 +317,7 @@ foreach (var func in selectedFunctions)
                     paramTable = c.Table.DaxObjectFullName;
                     paramProperties = c.GetAnnotation("Properties") ?? "";
                     paramPropertyNames = c.GetAnnotation("PropertyNames") ?? "";
+                    paramDataCategory = c.DataCategory ?? "";
                     paramTablePlaceholder = param.Name + "Table";
                 }
                 else if (paramObject.Type == "Table")
@@ -236,6 +371,8 @@ foreach (var func in selectedFunctions)
                 currentOutputPropertyNames.Add(
                     sOutputPropertyNames
                         .Replace(paramPropertyNamesPlaceholder, paramPropertyNames));
+                currentDataCategories.Add(
+                    sDataCategory.Replace(paramDataCategoryPlaceholder, paramDataCategory));
             }
         }
         delimiter = ", ";
@@ -246,6 +383,7 @@ foreach (var func in selectedFunctions)
         previousFormatStrings = currentFormatStrings;
         previousOutputProperties = currentOutputProperties;
         previousOutputPropertyNames = currentOutputPropertyNames;
+        previousDataCategories = currentDataCategories;
     }
     IList<Table> currentDestinationTables = new List<Table>();
     if (func.OutputType == "Measure" || func.OutputType == "Column")
@@ -258,7 +396,16 @@ foreach (var func in selectedFunctions)
                 .FirstOrDefault();
             if (destinationTable == null)
             {
-                destinationTable = SelectTable(preselect: null, label: $"Select destinatoin table for {func.OutputType} {currentListNames[i]}");
+                if (cliMode)
+                {
+                    destinationTable = Fx.GetTableFromEnv(Model, "MF_DESTINATION_TABLE");
+                }
+#if !TECLI
+                else
+                {
+                    destinationTable = SelectTable(preselect: null, label: $"Select destinatoin table for {func.OutputType} {currentListNames[i]}");
+                }
+#endif
                 if (destinationTable == null) return;
             }
             currentDestinationTables.Add(destinationTable);
@@ -284,6 +431,11 @@ foreach (var func in selectedFunctions)
             if (!string.IsNullOrEmpty(currentOutputPropertyNames[i]))
             {
                 measure.SetAnnotation("PropertyNames", currentOutputPropertyNames[i]);
+            }
+            // Set data category unless Uncategorized (empty data category in the model)
+            if (!string.IsNullOrEmpty(currentDataCategories[i]) && currentDataCategories[i] != "Uncategorized")
+            {
+                measure.DataCategory = currentDataCategories[i];
             }
             totalMeasuresCreated++;
         }
@@ -334,304 +486,7 @@ if (totalMeasuresCreated > 0 || totalColumnsCreated > 0)
 
 public static class Fx
 {
-    public static Measure GetSelectedMeasure(IEnumerable<Measure> measures, string label = "Select Measure")
-    {
-        Measure selectedMeasure = null;
-        if (measures.Count() == 1)
-        {
-            selectedMeasure = measures.First();
-        }
-        else
-        {
-            selectedMeasure = SelectMeasure(label: label);
-            if (selectedMeasure == null)
-            {
-                Info("No measure selected.");
-                return null;
-            }
-        }
-        return selectedMeasure;
-    }
-    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
-    {
-        Table selectedTable = null;
-        if (tables.Count() == 1)
-        {
-            selectedTable = tables.First();
-        }
-        else if (tables.Count() > 1)
-        {
-            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
-            if (selectedTable == null)
-            {
-                Info("No table selected.");
-                return null;
-            }
-        } else             {
-            if (createMeasureTableIfNoneSelected)
-            {
-                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
-            } 
-            else
-            {
-                selectedTable = SelectTable(tables: tables, label: label);
-                if (selectedTable == null)
-                {
-                    Info("No table selected.");
-                    return null;
-                }
-            }
-        }
-        return selectedTable;
-    }
-    public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
-    {
-        if (!model.Tables.OfType<CalculationGroupTable>().Any())
-        {
-            Info("No calculation groups found in the model.");
-            return null;
-        }
-        // Create a TreeView form
-        Form form = new Form
-        {
-            Text = label,
-            StartPosition = FormStartPosition.CenterScreen,
-            Width = 600,
-            Height = 500,
-            Padding = new Padding(10)
-        };
-        TreeView treeView = new TreeView
-        {
-            Dock = DockStyle.Fill,
-            CheckBoxes = true
-        };
-        // Track selections per calculation group
-        var selectionMap = new Dictionary<string, TreeNode>();
-        // Populate tree with calculation groups and items
-        foreach (var calcGroup in model.Tables.OfType<CalculationGroupTable>())
-        {
-            TreeNode groupNode = new TreeNode(calcGroup.Name)
-            {
-                Tag = calcGroup
-            };
-            foreach (var calcItem in calcGroup.CalculationItems)
-            {
-                TreeNode itemNode = new TreeNode(calcItem.Name)
-                {
-                    Tag = calcItem
-                };
-                groupNode.Nodes.Add(itemNode);
-            }
-            treeView.Nodes.Add(groupNode);
-            groupNode.Expand();
-        }
-        // Handle BeforeCheck to prevent checking group nodes
-        treeView.BeforeCheck += (sender, e) =>
-        {
-            // Prevent checking calculation group nodes (only allow calculation items)
-            if (e.Node.Tag is CalculationGroupTable)
-            {
-                e.Cancel = true;
-            }
-        };
-        // Handle node check events to enforce "one per group" rule
-        treeView.AfterCheck += (sender, e) =>
-        {
-            if (e.Node.Tag is CalculationItem)
-            {
-                var calcItem = (CalculationItem)e.Node.Tag;
-                string groupName = calcItem.CalculationGroupTable.Name;
-                if (e.Node.Checked)
-                {
-                    // Uncheck any previously selected item in this group
-                    if (selectionMap.ContainsKey(groupName))
-                    {
-                        selectionMap[groupName].Checked = false;
-                    }
-                    selectionMap[groupName] = e.Node;
-                }
-                else
-                {
-                    // Remove from selection if unchecked
-                    if (selectionMap.ContainsKey(groupName) && selectionMap[groupName] == e.Node)
-                    {
-                        selectionMap.Remove(groupName);
-                    }
-                }
-            }
-        };
-        // Button panel
-        FlowLayoutPanel buttonPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(5)
-        };
-        Button okButton = new Button
-        {
-            Text = "OK",
-            DialogResult = DialogResult.OK,
-            Width = 80,
-            Height = 30
-        };
-        Button cancelButton = new Button
-        {
-            Text = "Cancel",
-            DialogResult = DialogResult.Cancel,
-            Width = 80,
-            Height = 30
-        };
-        buttonPanel.Controls.Add(okButton);
-        buttonPanel.Controls.Add(cancelButton);
-        form.Controls.Add(treeView);
-        form.Controls.Add(buttonPanel);
-        // Show dialog
-        ResetWaitCursor();
-        DialogResult result = form.ShowDialog();
-        if (result == DialogResult.Cancel)
-        {
-            Info("Selection cancelled.");
-            return null;
-        }
-        // Build result dictionary: CalculationGroupName -> CalculationItemName
-        var selectedItems = new Dictionary<string, string>();
-        foreach (var kvp in selectionMap)
-        {
-            if (kvp.Value.Checked)
-            {
-                selectedItems[kvp.Key] = kvp.Value.Text;
-            }
-        }
-        return selectedItems;
-    }
-    public static void CheckCompatibilityVersion(Model model, int requiredVersion, string customMessage = "Compatibility level must be raised to {0} to run this script. Do you want raise the compatibility level?")
-    {
-        if (model.Database.CompatibilityLevel < requiredVersion)
-        {
-            if (Fx.IsAnswerYes(String.Format("The model compatibility level is below {0}. " + customMessage, requiredVersion)))
-            {
-                model.Database.CompatibilityLevel = requiredVersion;
-            }
-            else
-            {
-                Info("Operation cancelled.");
-                return;
-            }
-        }
-    }
-    public static Function CreateFunction(
-        Model model,
-        string name,
-        string expression,
-        out bool functionCreated,
-        string description = null,
-        string annotationLabel = null,
-        string annotationValue = null,
-        string outputType = null,
-        string nameTemplate = null,
-        string formatString = null,
-        string displayFolder = null,
-        string outputDestination = null)
-    {
-        Function function = null as Function;
-        functionCreated = false;
-        var matchingFunctions = model.Functions.Where(f => f.GetAnnotation(annotationLabel) == annotationValue);
-        if (matchingFunctions.Count() == 1)
-        {
-            return matchingFunctions.First();
-        }
-        else if (matchingFunctions.Count() == 0)
-        {
-            function = model.AddFunction(name);
-            function.Expression = expression;
-            function.Description = description;
-            functionCreated = true;
-        }
-        else
-        {
-            Error("More than one function found with annoation " + annotationLabel + " value " + annotationValue);
-            return null as Function;
-        }
-        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-        {
-            function.SetAnnotation(annotationLabel, annotationValue);
-        }
-        if (!string.IsNullOrEmpty(outputType))
-        {
-            function.SetAnnotation("outputType", outputType);
-        }
-        if (!string.IsNullOrEmpty(nameTemplate))
-        {
-            function.SetAnnotation("nameTemplate", nameTemplate);
-        }
-        if (!string.IsNullOrEmpty(formatString))
-        {
-            function.SetAnnotation("formatString", formatString);
-        }
-        if (!string.IsNullOrEmpty(displayFolder))
-        {
-            function.SetAnnotation("displayFolder", displayFolder);
-        }
-        if (!string.IsNullOrEmpty(outputDestination))
-        {
-            function.SetAnnotation("outputDestination", outputDestination);
-        }
-        return function;
-    }
-    public static Table CreateCalcTable(Model model, string tableName, string tableExpression = "FILTER({0},FALSE)")
-    {
-        return model.Tables.FirstOrDefault(t =>
-                            string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase)) //case insensitive search
-                            ?? model.AddCalculatedTable(tableName, tableExpression);
-    }
-    public static Measure CreateMeasure(
-        Table table, 
-        string measureName, 
-        string measureExpression,
-        out bool measureCreated,
-        string formatString = null,
-        string displayFolder = null,
-        string description = null,
-        string annotationLabel = null, 
-        string annotationValue = null,
-        bool isHidden = false)
-    {
-        measureCreated = false;
-        IEnumerable<Measure> matchingMeasures = null as IEnumerable<Measure>;
-        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-        {
-            matchingMeasures = table.Measures.Where(m => m.GetAnnotation(annotationLabel) == annotationValue);
-        }
-        else
-        {
-            matchingMeasures = table.Measures.Where(m => m.Name == measureName);
-        }
-        if (matchingMeasures.Count() == 1)
-        {
-            return matchingMeasures.First();
-        }
-        else if (matchingMeasures.Count() == 0)
-        {
-            Measure measure = table.AddMeasure(measureName, measureExpression);
-            measure.Description = description;
-            measure.DisplayFolder = displayFolder;
-            measure.FormatString = formatString;
-            measureCreated = true;
-            if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-            {
-                measure.SetAnnotation(annotationLabel, annotationValue);
-            }
-            measure.IsHidden = isHidden;
-            return measure;
-        }
-        else
-        {
-            Error("More than one measure found with annoation " + annotationLabel + " value " + annotationValue);
-            Output(matchingMeasures);
-            return null as Measure;
-        }
-    }
+#if !TECLI
     // In TE2 scripts run inside an "Hourglass" that sets Application.UseWaitCursor = true for the
     // whole application, so dialog boxes show a busy cursor (TE3 solves this with WaitFormVisible).
     // Turn the flag off and nudge Windows (WM_SETCURSOR) to refresh the cursor immediately,
@@ -658,13 +513,9 @@ public static class Fx
         };
         return response;
     }
-    public static bool IsAnswerYes(string question, string title = "Please confirm")
-    {
-        ResetWaitCursor();
-        var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        return result == DialogResult.Yes;
-    }
+#endif
     public const string DefaultSentinel = "<<USE_DEFAULT>>";
+#if !TECLI
     public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "", string defaultValue = null, string description = null)
     {
         var returnEmpty = (Values: new List<string>(), Type: (string)null);
@@ -937,145 +788,6 @@ public static class Fx
             return listbox.SelectedItem != null ? listbox.SelectedItem.ToString() : null;
         }
     }
-    public static IEnumerable<Table> GetDateTables(Model model)
-    {
-        var dateTables = model.Tables
-            .Where(t => t.DataCategory == "Time" &&
-                   t.Columns.Any(c => c.IsKey && c.DataType == DataType.DateTime))
-            .ToList();
-        if (!dateTables.Any())
-        {
-            Error("No date table detected in the model. Please mark your date table(s) as date table");
-            return null;
-        }
-        return dateTables;
-    }
-    public static Table GetDateTable(Model model, string prompt = "Select Date Table")
-    {
-        var dateTables = GetDateTables(model);
-        if (dateTables == null) {
-            Table t = SelectTable(model.Tables, label: prompt);
-            if(t == null)
-            {
-                Error("No table selected");
-                return null;
-            }
-            if (IsAnswerYes(String.Format("Mark {0} as date table?",t.DaxObjectFullName)))
-            {
-                t.DataCategory = "Time";
-                var dateColumns = t.Columns
-                    .Where(c => c.DataType == DataType.DateTime)
-                    .ToList();
-                if(dateColumns.Count == 0)
-                {
-                    Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column",t.Name));
-                    return null;
-                }
-                var keyColumn = SelectColumn(dateColumns, preselect:dateColumns.First(), label: "Select Date Column to be used as key column");
-                if(keyColumn == null)
-                {
-                    Error("No key column selected");
-                    return null;
-                }
-                keyColumn.IsKey = true;
-            }
-            return t;
-        };
-        if (dateTables.Count() == 1)
-            return dateTables.First();
-        Table dateTable = SelectTable(dateTables, label: prompt);
-        if(dateTable == null)
-        {
-            Error("No table selected");
-            return null;
-        }
-        return dateTable;
-    }
-    public static Column GetDateColumn(Table dateTable, string prompt = "Select Date Column")
-    {
-        var dateColumns = dateTable.Columns
-            .Where(c => c.DataType == DataType.DateTime)
-            .ToList();
-        if(dateColumns.Count == 0)
-        {
-            Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column", dateTable.Name));
-            return null;
-        }
-        if(dateColumns.Any(c => c.IsKey))
-        {
-            return dateColumns.First(c => c.IsKey);
-        }
-        Column dateColumn = null;
-        if (dateColumns.Count() == 1)
-        {
-            dateColumn = dateColumns.First();
-        }
-        else
-        {
-            dateColumn = SelectColumn(dateColumns, label: prompt);
-            if (dateColumn == null)
-            {
-                Error("No column selected");
-                return null;
-            }
-        }
-        return dateColumn;
-    }
-    public static IEnumerable<Table> GetFactTables(Model model)
-    {
-        IEnumerable<Table> factTables = model.Tables.Where(
-            x => model.Relationships.Where(r => r.ToTable == x)
-                    .All(r => r.ToCardinality == RelationshipEndCardinality.Many)
-                && model.Relationships.Where(r => r.FromTable == x)
-                    .All(r => r.FromCardinality == RelationshipEndCardinality.Many)
-                && model.Relationships.Where(r => r.ToTable == x || r.FromTable == x).Any()); // at least one relationship
-        if (!factTables.Any())
-        {
-            Error("No fact table detected in the model. Please check that the model contains relationships");
-            return null;
-        }
-        return factTables;
-    }
-    public static Table GetFactTable(Model model, string prompt = "Select Fact Table")
-    {
-        Table factTable = null;
-        var factTables = GetFactTables(model);
-        if (factTables == null)
-        {
-           factTable = SelectTable(model.Tables, label: "This does not look like a star schema. Choose your fact table manually");
-            if (factTable == null)
-            {
-                Error("No table selected");
-                return null;
-            }
-            return factTable;
-        };
-        if (factTables.Count() == 1)
-            return factTables.First();
-        factTable = SelectTable(factTables, label: prompt);
-        if (factTable == null)
-        {
-            Error("No table selected");
-            return null;
-        }
-        return factTable;
-    }
-    public static Table GetTablesWithAnnotation(IEnumerable<Table> tables, string annotationLabel, string annotationValue)
-    {
-        Func<Table, bool> lambda = t => t.GetAnnotation(annotationLabel) == annotationValue;
-        IEnumerable<Table> matchTables = GetFilteredTables(tables, lambda);
-        return GetFilteredTables(tables, lambda).FirstOrDefault();
-    }
-    public static IEnumerable<Table> GetFilteredTables(IEnumerable<Table> tables, Func<Table, bool> lambda)
-    {
-        var filteredTables = tables.Where(t => lambda(t));
-        return filteredTables.Any() ? filteredTables : null;
-    }
-    public static IEnumerable<Column> GetFilteredColumns(IEnumerable<Column> columns, Func<Column, bool> lambda, bool returnAllIfNoneFound = true)
-    {
-        var filteredColumns = columns.Where(c => lambda(c));
-        return filteredColumns.Any() || returnAllIfNoneFound ? filteredColumns : null;
-    }
     public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)", string defaultValue = null, string description = null)
     {
         measures ??= model.AllMeasures;
@@ -1116,6 +828,90 @@ public static class Fx
         IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label, defaultValue: defaultValue, description: description);
         return selectedColumnNames;
     }
+    // True when TE2 runs the script from the command line (-S / -SCRIPT). TE2 doesn't define TECLI and shows
+    // Select*/Choose* dialogs modally, which hangs an unattended run. Macros call it in the #else branch of #if TECLI
+    // (te is always CLI mode), so this method has no #if of its own.
+    public static bool IsCliMode()
+    {
+        return Environment.GetCommandLineArgs().Any(a =>
+            a.Equals("-S", StringComparison.OrdinalIgnoreCase) || a.Equals("-SCRIPT", StringComparison.OrdinalIgnoreCase));
+    }
+#endif
+    // ENV helpers: used in the #if TECLI branch of macros so agents can pass inputs through environment variables.
+    // Lists are separated by ';'. All return null (after an Error) when the variable is missing or a value can't be resolved,
+    // except when a defaultValue is given, which is used if the variable is missing or empty.
+    // Raw string value, e.g. a name for a new measure or table
+    public static string GetStringFromEnv(string envVar, string defaultValue = null)
+    {
+        string value = Environment.GetEnvironmentVariable(envVar);
+        if (!String.IsNullOrWhiteSpace(value)) return value;
+        if (defaultValue != null) return defaultValue;
+        Error("Environment variable " + envVar + " is not set.");
+        return null;
+    }
+    // Several string values separated by ';'
+    public static List<string> GetStringsFromEnv(string envVar)
+    {
+        string value = GetStringFromEnv(envVar);
+        if (value == null) return null;
+        return value.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToList();
+    }
+    // One of the given options (answer to a ChooseString). Only a value taken from the variable is checked, not the default
+    public static string GetOptionFromEnv(string envVar, IList<string> options, string defaultValue = null)
+    {
+        if (String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(envVar))) return GetStringFromEnv(envVar, defaultValue);
+        string value = GetStringFromEnv(envVar);
+        if (options.Contains(value)) return value;
+        Error("Environment variable " + envVar + " must be one of " + String.Join(", ", options) + ", not '" + value + "'.");
+        return null;
+    }
+    // Resolves each ';'-separated reference against the candidates using the given name forms
+    private static List<T> GetObjectsFromEnv<T>(string envVar, IEnumerable<T> candidates, Func<T, string[]> names, string kind)
+    {
+        List<string> references = GetStringsFromEnv(envVar);
+        if (references == null) return null;
+        var result = new List<T>();
+        foreach (string reference in references)
+        {
+            T obj = candidates.FirstOrDefault(c => names(c).Contains(reference));
+            if (obj == null) { Error(kind + " " + reference + " (from " + envVar + ") not found."); return null; }
+            result.Add(obj);
+        }
+        return result;
+    }
+    // 'Sales'[Amount] or Sales[Amount]
+    public static List<Column> GetColumnsFromEnv(Model model, string envVar)
+    {
+        return GetObjectsFromEnv(envVar, model.AllColumns, c => new[] { c.DaxObjectFullName, c.Table.Name + "[" + c.Name + "]" }, "Column");
+    }
+    // [Sales Amount], Sales Amount or 'Sales'[Sales Amount]
+    public static List<Measure> GetMeasuresFromEnv(Model model, string envVar)
+    {
+        return GetObjectsFromEnv(envVar, model.AllMeasures, m => new[] { m.DaxObjectFullName, m.Name, m.Table.DaxObjectFullName + m.DaxObjectFullName }, "Measure");
+    }
+    // 'Sales' or Sales
+    public static List<Table> GetTablesFromEnv(Model model, string envVar)
+    {
+        return GetObjectsFromEnv(envVar, model.Tables, t => new[] { t.DaxObjectFullName, t.Name }, "Table");
+    }
+    // Function name, e.g. Local.TimeIntel.YTD
+    public static List<Function> GetFunctionsFromEnv(Model model, string envVar)
+    {
+        return GetObjectsFromEnv(envVar, model.Functions, f => new[] { f.Name }, "Function");
+    }
+    // 'Gregorian' or Gregorian
+    public static List<Calendar> GetCalendarsFromEnv(Model model, string envVar)
+    {
+        return GetObjectsFromEnv(envVar, model.AllCalendars, c => new[] { "'" + c.Name + "'", c.Name }, "Calendar");
+    }
+    public static Table GetTableFromEnv(Model model, string envVar) { return Single(GetTablesFromEnv(model, envVar), envVar); }
+    private static T Single<T>(List<T> list, string envVar) where T : class
+    {
+        if (list == null) return null;
+        if (list.Count != 1) { Error("Environment variable " + envVar + " must contain exactly one reference."); return null; }
+        return list[0];
+    }
+#if !TECLI
     public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400, string defaultValue = null, string description = null)
     {
         Tables ??= model.Tables;
@@ -1142,6 +938,7 @@ public static class Fx
             return selectedDisplay;
         return selectedDisplay.Select(d => calendarMap[d]).ToList();
     }
+#endif
 }
 
     
@@ -1159,7 +956,15 @@ public static class Fx
         public string OutputDestination { get; set; }
         public string OutputProperties { get; set; }
         public string OutputPropertyNames { get; set; }
+        public string OutputDataCategory { get; set; }
         public Function OriginalFunction { get; set; }
+
+        // Data categories accepted by Power BI for measures (TOM values). "Uncategorized" means no data category.
+        public static readonly IList<string> DataCategories = new List<string>
+        {
+            "Uncategorized", "Address", "Place", "City", "County", "StateOrProvince", "PostalCode",
+            "Country", "Continent", "Latitude", "Longitude", "WebUrl", "ImageUrl", "Barcode"
+        };
         public List<FunctionParameter> Parameters { get; set; }
         private static List<FunctionParameter> ExtractParametersFromExpression(string expression)
         {
@@ -1263,12 +1068,9 @@ public static class Fx
 
         
 
-        public static FunctionExtended CreateFunctionExtended(Function function, bool completeMetadata = true)
+        // Default values for the output annotations of a function, derived from its name and parameters
+        private static (string NameTemplate, string FormatString, string DisplayFolder, string Destination, string OutputProperties, string OutputPropertyNames) GetMetadataDefaults(Function function, List<FunctionParameter> Parameters)
         {
-
-            FunctionExtended emptyFunction = null as FunctionExtended;
-            List<FunctionParameter> Parameters =  ExtractParametersFromExpression (function.Expression);
-
             string nameTemplateDefault = "";
             string formatStringDefault = "";
             string displayFolderDefault = "";
@@ -1338,9 +1140,105 @@ public static class Fx
                 outputPropertyNamesDefault = string.Join("|", Parameters.Select(p => p.Name)) + "|" + functionGroupName;
 
             };
-            
-            
 
+            return (nameTemplateDefault, formatStringDefault, displayFolderDefault, destinationDefault, outputPropertiesDefault, outputPropertyNamesDefault);
+        }
+
+        // Non-interactive version of CreateFunctionExtended, used by skill-ready macros in CLI mode. Each output setting is read from
+        // the environment variable <envPrefix>_<KEY>_<FUNCTION> (function name in upper case, other characters as '_'). When it is
+        // not set, the function's annotation is used, or the default value if there is none. The values used are stored as annotations.
+        public static FunctionExtended CreateFunctionExtendedFromEnv(Function function, string envPrefix)
+        {
+            List<FunctionParameter> Parameters = ExtractParametersFromExpression(function.Expression);
+            var defaults = GetMetadataDefaults(function, Parameters);
+            string envSuffix = "_" + new string(function.Name.ToUpper().Select(ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray());
+
+            string Current(string annotation, string defaultValue)
+            {
+                string value = function.GetAnnotation(annotation);
+                return string.IsNullOrEmpty(value) ? defaultValue : value;
+            }
+
+            string myOutputType = Fx.GetOptionFromEnv(envPrefix + "_OUTPUT_TYPE" + envSuffix,
+                new List<string> { "Table", "Column", "Measure", "None" }, Current("outputType", "Measure"));
+            if (myOutputType == null) return null;
+            function.SetAnnotation("outputType", myOutputType);
+
+            string myNameTemplate = Fx.GetStringFromEnv(envPrefix + "_NAME_TEMPLATE" + envSuffix, Current("nameTemplate", defaults.NameTemplate));
+            function.SetAnnotation("nameTemplate", myNameTemplate);
+
+            string myFormatString = Fx.GetStringFromEnv(envPrefix + "_FORMAT_STRING" + envSuffix, Current("formatString", defaults.FormatString));
+            function.SetAnnotation("formatString", myFormatString);
+
+            string myDisplayFolder = Fx.GetStringFromEnv(envPrefix + "_DISPLAY_FOLDER" + envSuffix, Current("displayFolder", defaults.DisplayFolder));
+            function.SetAnnotation("displayFolder", myDisplayFolder);
+
+            string myOutputDestination = function.GetAnnotation("outputDestination");
+            if (myOutputType == "Table")
+            {
+                if (string.IsNullOrEmpty(myOutputDestination)) myOutputDestination = "Model";
+            }
+            else if (myOutputType == "Column" || myOutputType == "Measure")
+            {
+                myOutputDestination = Fx.GetStringFromEnv(envPrefix + "_DESTINATION" + envSuffix, Current("outputDestination", defaults.Destination));
+                function.SetAnnotation("outputDestination", myOutputDestination);
+            }
+
+            string myOutputProperties = Fx.GetStringFromEnv(envPrefix + "_PROPERTIES" + envSuffix, Current("outputProperties", defaults.OutputProperties));
+            function.SetAnnotation("outputProperties", myOutputProperties);
+
+            string myOutputPropertyNames = Fx.GetStringFromEnv(envPrefix + "_PROPERTY_NAMES" + envSuffix, Current("outputPropertyNames", defaults.OutputPropertyNames));
+            function.SetAnnotation("outputPropertyNames", myOutputPropertyNames);
+
+            string myDataCategory = function.GetAnnotation("dataCategory");
+            if (myOutputType == "Measure")
+            {
+                // same options as in interactive mode: fixed categories plus one placeholder per parameter that may reference a measure or column
+                IList<string> dataCategoryOptions = new List<string>(DataCategories);
+                foreach (var p in Parameters.Where(p =>
+                    p.Type == "MEASUREREF" || p.Type == "COLUMNREF" || p.Type == "ANYREF"
+                    || p.Name.ToUpper().Contains("MEASURE") || p.Name.ToUpper().Contains("COLUMN")))
+                {
+                    dataCategoryOptions.Add(p.Name + "DataCategory");
+                }
+
+                myDataCategory = Fx.GetOptionFromEnv(envPrefix + "_DATA_CATEGORY" + envSuffix, dataCategoryOptions, Current("dataCategory", "Uncategorized"));
+                if (myDataCategory == null) return null;
+                function.SetAnnotation("dataCategory", myDataCategory);
+            }
+
+            return new FunctionExtended
+            {
+                Name = function.Name,
+                Expression = function.Expression,
+                Description = function.Description,
+                Parameters = Parameters,
+                OutputFormatString = myFormatString,
+                OutputNameTemplate = myNameTemplate,
+                OutputType = myOutputType,
+                OutputDisplayFolder = myDisplayFolder,
+                OutputDestination = myOutputDestination,
+                OutputProperties = myOutputProperties,
+                OutputPropertyNames = myOutputPropertyNames,
+                OutputDataCategory = myDataCategory,
+                OriginalFunction = function
+            };
+        }
+#if !TECLI
+
+        public static FunctionExtended CreateFunctionExtended(Function function, bool completeMetadata = true)
+        {
+
+            FunctionExtended emptyFunction = null as FunctionExtended;
+            List<FunctionParameter> Parameters =  ExtractParametersFromExpression (function.Expression);
+
+            var defaults = GetMetadataDefaults(function, Parameters);
+            string nameTemplateDefault = defaults.NameTemplate;
+            string formatStringDefault = defaults.FormatString;
+            string displayFolderDefault = defaults.DisplayFolder;
+            string destinationDefault = defaults.Destination;
+            string outputPropertiesDefault = defaults.OutputProperties;
+            string outputPropertyNamesDefault = defaults.OutputPropertyNames;
 
             string myOutputType = function.GetAnnotation("outputType"); 
             string myNameTemplate = function.GetAnnotation("nameTemplate");
@@ -1349,12 +1247,14 @@ public static class Fx
             string myOutputDestination = function.GetAnnotation("outputDestination");
             string myOutputProperties = function.GetAnnotation("outputProperties");
             string myOutputPropertyNames = function.GetAnnotation("outputPropertyNames");
+            string myDataCategory = function.GetAnnotation("dataCategory");
 
             if (completeMetadata)
             {
                 if (string.IsNullOrEmpty(myOutputType))
                 {
-                    IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "None" };
+                    // the first option is preselected, so Measure (the usual output) is the default
+                    IList<string> selectionTypeOptions = new List<string> { "Measure", "Column", "Table", "None" };
                     myOutputType =
                         Fx.ChooseString(
                             OptionList: selectionTypeOptions,
@@ -1404,7 +1304,7 @@ public static class Fx
                                 DefaultResponse: destinationDefault);
 
                         if (string.IsNullOrEmpty(myOutputDestination)) return emptyFunction;
-                        function.SetAnnotation("outputDestination", destinationDefault);
+                        function.SetAnnotation("outputDestination", myOutputDestination);
                     }
                 }
 
@@ -1431,6 +1331,28 @@ public static class Fx
                     if (string.IsNullOrEmpty(myOutputPropertyNames)) return emptyFunction;
                     function.SetAnnotation("outputPropertyNames", myOutputPropertyNames);
                 }
+
+                if (string.IsNullOrEmpty(myDataCategory) && myOutputType == "Measure")
+                {
+                    // fixed categories plus one placeholder per parameter that may reference a measure or column,
+                    // which resolves to the data category of the selected object. Uncategorized comes first, so it is preselected
+                    IList<string> dataCategoryOptions = new List<string>(DataCategories);
+                    foreach (var p in Parameters.Where(p =>
+                        p.Type == "MEASUREREF" || p.Type == "COLUMNREF" || p.Type == "ANYREF"
+                        || p.Name.ToUpper().Contains("MEASURE") || p.Name.ToUpper().Contains("COLUMN")))
+                    {
+                        dataCategoryOptions.Add(p.Name + "DataCategory");
+                    }
+
+                    myDataCategory =
+                        Fx.ChooseString(
+                            OptionList: dataCategoryOptions,
+                            label: "Choose output data category for function " + function.Name,
+                            customWidth: 600);
+
+                    if (string.IsNullOrEmpty(myDataCategory)) return emptyFunction;
+                    function.SetAnnotation("dataCategory", myDataCategory);
+                }
             }
 
             var functionExtended = new FunctionExtended
@@ -1446,12 +1368,14 @@ public static class Fx
                 OutputDestination = myOutputDestination,
                 OutputProperties = myOutputProperties,
                 OutputPropertyNames = myOutputPropertyNames,
+                OutputDataCategory = myDataCategory,
                 OriginalFunction = function
 
             };
 
             return functionExtended;
         }
+#endif
 
         
     }
