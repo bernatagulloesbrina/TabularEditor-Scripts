@@ -64,7 +64,7 @@ string hexCodeColumnNameWithTable = "'" + colorTableName + "'[" + hexCodeColumnN
 
 string query = "EVALUATE VALUES(" + colorColumnNameWithTable + ")";
  
-using (var reader = Model.Database.ExecuteReader(query))
+using (var reader = ExecuteReader(query))
 {
     // Create a loop for every row in the resultset
     while(reader.Read())

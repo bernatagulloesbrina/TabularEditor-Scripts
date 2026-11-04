@@ -155,7 +155,7 @@ foreach (Measure m in Selected.Measures)
                 );
 
             /*executes the query*/ 
-            using (var reader = Model.Database.ExecuteReader(query))
+            using (var reader = ExecuteReader(query))
             {
                 // resultset should contain just one row, with the format string
                 while (reader.Read())

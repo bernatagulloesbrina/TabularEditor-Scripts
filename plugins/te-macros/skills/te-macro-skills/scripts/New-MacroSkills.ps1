@@ -1,11 +1,16 @@
 <#
 .SYNOPSIS
-  Generates one Claude skill per Tabular Editor 3 macro that carries a "// SKILL:" header.
+  Generates one Claude skill per Tabular Editor macro that carries a "// SKILL:" header.
 
 .DESCRIPTION
   Reads MacroActions.json, and for every macro whose code has "// SKILL: name:" and "// SKILL: description:"
   lines, writes <SkillsDir>\<name>\SKILL.md (frontmatter + the header text + a standard "How to run" section),
   macro.json (metadata the runner uses) and scripts\Invoke-MacroSkill.ps1 (the runner).
+
+  The macros come from Tabular Editor 3 (%LOCALAPPDATA%\TabularEditor3\MacroActions.json) or, when TE3 has no
+  macros file or -Edition TE2 is passed, from Tabular Editor 2 (%LOCALAPPDATA%\TabularEditor\MacroActions.json).
+  The skills run the macros with the Tabular Editor CLI (te) when it is installed, otherwise with the Tabular Editor 2
+  command line (TabularEditor.exe); -Engine picks one.
 
   By default the skills go into a local Claude Code plugin, "macro-skills", in $PluginDir (a local marketplace
   with that one plugin), so they can be enabled or disabled together with /plugin. Claude Code loads it in place:
@@ -13,17 +18,26 @@
   (once per machine). -SkillsDir writes plain skills to a skills folder instead (e.g. .\.claude\skills).
 
   Only folders it generated itself (macro.json with generator = te-macro-skills) are ever updated or deleted.
-  Each macro is also compiled with `te script --validate` (TECLI defined) to report whether it can run in te.
+  Each macro is also compiled with the engine (te: `te script --validate`, TECLI defined; te2: a run on an empty
+  model) to report whether it can run there.
 
 .EXAMPLE
   .\New-MacroSkills.ps1 -WhatIf
+  .\New-MacroSkills.ps1 -Edition TE2 -Engine te2
   .\New-MacroSkills.ps1 -Register
   .\New-MacroSkills.ps1 -Only sum-of-columns -SkillsDir ".\.claude\skills"
   .\New-MacroSkills.ps1 -Prune
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string] $MacrosFile = "$env:LOCALAPPDATA\TabularEditor3\MacroActions.json",
+    # Tabular Editor whose macros become skills. Default: TE3 if it has a macros file, otherwise TE2
+    [ValidateSet('TE3', 'TE2')]
+    [string] $Edition,
+    # Read this macros file instead (its edition comes from its folder)
+    [string] $MacrosFile,
+    # How the skills run the macros: te (Tabular Editor CLI) or te2 (TabularEditor.exe). Default: te if installed
+    [ValidateSet('te', 'te2')]
+    [string] $Engine,
     [string] $PluginDir = "$env:USERPROFILE\.claude\macro-skills",
     # Write plain skills to this folder instead of the local plugin
     [string] $SkillsDir,
@@ -33,8 +47,9 @@ param(
     [string[]] $Only,
     # Delete generated skills whose macro no longer exists
     [switch] $Prune,
-    # Skip the te compile check
+    # Skip the compile check
     [switch] $NoCompileCheck,
+    # te.exe or TabularEditor.exe, for the compile check
     [string] $TabularEditor
 )
 
@@ -46,7 +61,35 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $pluginName = 'macro-skills'
 $marketplaceName = 'local-macro-skills'
 
-if (-not (Test-Path $MacrosFile)) { throw "Macros file not found: $MacrosFile" }
+$editionFiles = [ordered]@{
+    TE3 = "$env:LOCALAPPDATA\TabularEditor3\MacroActions.json"
+    TE2 = "$env:LOCALAPPDATA\TabularEditor\MacroActions.json"
+}
+$editionNames = @{ TE3 = 'Tabular Editor 3'; TE2 = 'Tabular Editor 2' }
+if ($MacrosFile) {
+    if (-not (Test-Path $MacrosFile)) { throw "Macros file not found: $MacrosFile" }
+    $MacrosFile = (Resolve-Path $MacrosFile).Path
+    if (-not $Edition) { $Edition = if ((Split-Path $MacrosFile) -eq (Split-Path $editionFiles.TE2)) { 'TE2' } else { 'TE3' } }
+}
+else {
+    if (-not $Edition) { $Edition = if (Test-Path $editionFiles.TE3) { 'TE3' } elseif (Test-Path $editionFiles.TE2) { 'TE2' } else { 'TE3' } }
+    $MacrosFile = $editionFiles[$Edition]
+    if (-not (Test-Path $MacrosFile)) { throw "Macros file not found: $MacrosFile. $(if ($Edition -eq 'TE3') { 'Is Tabular Editor 3 installed? -Edition TE2 reads the Tabular Editor 2 macros.' } else { 'Save a macro in Tabular Editor 2 first, or import some with Import-Macros.ps1.' })" }
+}
+$editionName = $editionNames[$Edition]
+
+# Engine: te if installed (or asked for), otherwise TabularEditor.exe
+function Find-TE { $c = Get-Command te.exe -ErrorAction SilentlyContinue; if ($c) { $c.Source } else { @("$env:LOCALAPPDATA\Programs\TabularEditor3\te.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1 } }
+function Find-TE2 {
+    $c = Get-Command TabularEditor.exe -ErrorAction SilentlyContinue
+    if ($c) { $c.Source } else { @("${env:ProgramFiles(x86)}\Tabular Editor\TabularEditor.exe", "$env:ProgramFiles\Tabular Editor\TabularEditor.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1 }
+}
+if (-not $Engine) { $Engine = if (Find-TE) { 'te' } elseif (Find-TE2) { 'te2' } else { 'te' } }
+if (-not $TabularEditor) { $TabularEditor = if ($Engine -eq 'te') { Find-TE } else { Find-TE2 } }
+if (-not $TabularEditor) {
+    Write-Warning "$(if ($Engine -eq 'te') { 'Tabular Editor CLI (te.exe)' } else { 'Tabular Editor 2 (TabularEditor.exe)' }) not found: the skills will need it to run."
+}
+
 $asPlugin = -not $SkillsDir
 if ($asPlugin) {
     New-Item -ItemType Directory -Force $PluginDir -WhatIf:$false | Out-Null
@@ -56,11 +99,11 @@ if ($asPlugin) {
     $manifests = @{
         (Join-Path $PluginDir '.claude-plugin\marketplace.json') = [ordered]@{
             name = $marketplaceName; owner = [ordered]@{ name = $env:USERNAME }
-            metadata = [ordered]@{ description = "Skills generated by $generator from this machine's Tabular Editor 3 macros." }
-            plugins = @([ordered]@{ name = $pluginName; source = "./plugins/$pluginName"; description = 'Run Tabular Editor 3 macros through the Tabular Editor CLI.' })
+            metadata = [ordered]@{ description = "Skills generated by $generator from this machine's Tabular Editor macros." }
+            plugins = @([ordered]@{ name = $pluginName; source = "./plugins/$pluginName"; description = 'Run Tabular Editor macros from the command line.' })
         }
         (Join-Path $pluginRoot '.claude-plugin\plugin.json') = [ordered]@{
-            name = $pluginName; description = 'Run Tabular Editor 3 macros through the Tabular Editor CLI.'
+            name = $pluginName; description = 'Run Tabular Editor macros from the command line.'
         }
     }
     foreach ($f in $manifests.Keys) {
@@ -73,15 +116,9 @@ if ($asPlugin) {
 New-Item -ItemType Directory -Force $SkillsDir -WhatIf:$false | Out-Null
 $SkillsDir = (Resolve-Path $SkillsDir).Path
 
-if (-not $NoCompileCheck) {
-    if (-not $TabularEditor) {
-        $onPath = Get-Command te.exe -ErrorAction SilentlyContinue
-        $TabularEditor = if ($onPath) { $onPath.Source } else { "$env:LOCALAPPDATA\Programs\TabularEditor3\te.exe" }
-    }
-    if (-not (Test-Path $TabularEditor)) {
-        Write-Warning "Tabular Editor CLI not found at '$TabularEditor'; skipping the compile check."
-        $NoCompileCheck = $true
-    }
+if (-not $NoCompileCheck -and -not ($TabularEditor -and (Test-Path $TabularEditor))) {
+    Write-Warning "Skipping the compile check: no $(if ($Engine -eq 'te') { 'te.exe' } else { 'TabularEditor.exe' }) found (pass -TabularEditor)."
+    $NoCompileCheck = $true
 }
 
 # Header lines of one kind ("SKILL" / "MACRO"), without the prefix and its first space
@@ -103,9 +140,27 @@ function Test-MacroCompiles([string] $code) {
     [IO.File]::WriteAllText($tmp, $code, $utf8)
     try {
         $ErrorActionPreference = 'Continue'
-        $out = & $TabularEditor script --file $tmp --validate --non-interactive 2>&1 | ForEach-Object { "$_" } |
-            Where-Object { $_ -match '\): error' }
-        [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); Errors = @($out | ForEach-Object { $_.Trim() }) }
+        if ($Engine -eq 'te') {
+            $out = & $TabularEditor script --file $tmp --validate --non-interactive 2>&1 | ForEach-Object { "$_" } |
+                Where-Object { $_ -match '\): error' }
+            return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); Errors = @($out | ForEach-Object { $_.Trim() }) }
+        }
+        # TabularEditor.exe has no validate-only mode: the macro runs on an empty model, which is never saved. Its
+        # inputs aren't set, so a skill-ready macro stops at the first one with Error(...); only compile errors count
+        $bim = "$tmp.bim"
+        [IO.File]::WriteAllText($bim, '{ "name": "CompileCheck", "compatibilityLevel": 1702, "model": { "culture": "en-US" } }', $utf8)
+        try {
+            $psi = New-Object Diagnostics.ProcessStartInfo $TabularEditor, "`"$bim`" -S `"$tmp`""
+            $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true
+            $p = [Diagnostics.Process]::Start($psi); $out = $p.StandardOutput.ReadToEndAsync()
+            if (-not $p.WaitForExit(60000)) {
+                $p.Kill()
+                return [pscustomobject]@{ Ok = $false; Errors = @('it waits on a dialog in the TE2 command line (no Fx.IsCliMode() branch)') }
+            }
+            $errors = @($out.Result -split "\r?\n" | Where-Object { $_ -match '^Error CS\d+' } | ForEach-Object { $_.Trim() })
+            [pscustomobject]@{ Ok = ($errors.Count -eq 0); Errors = $errors }
+        }
+        finally { Remove-Item $bim -Force -ErrorAction SilentlyContinue -WhatIf:$false }
     }
     finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false }
 }
@@ -152,8 +207,9 @@ $skills = foreach ($m in $macros) {
     foreach ($v in $used | Where-Object { $documented -notcontains $_ }) { $s.Warnings += "$v is read in the code but not listed under ## Inputs" }
     foreach ($v in $documented | Where-Object { $used -notcontains $_ }) { $s.Warnings += "$v is listed under ## Inputs but not read in the code" }
     if (-not (@($body) -match '^##\s+Inputs')) { $s.Warnings += 'no "## Inputs" section' }
-    if ($m.Execute -notmatch '#if\s+TECLI') { $s.Warnings += 'no #if TECLI block: in te the macro will run its interactive code' }
-    if ($m.Enabled -eq 'false') { $s.Warnings += 'macro is disabled in TE3' }
+    if ($Engine -eq 'te' -and $m.Execute -notmatch '#if\s+TECLI') { $s.Warnings += 'no #if TECLI block: in te the macro will run its interactive code' }
+    if ($Engine -eq 'te2' -and $m.Execute -notmatch 'IsCliMode\(') { $s.Warnings += 'no Fx.IsCliMode() check: in the TE2 command line the macro will run its interactive code and wait on dialogs' }
+    if ($m.Enabled -eq 'false') { $s.Warnings += "macro is disabled in $Edition" }
     $s
 }
 
@@ -180,7 +236,7 @@ foreach ($s in $skills) {
             $c = Test-MacroCompiles $s.Code
             if (-not $c.Ok) {
                 $first = if ($c.Errors) { $c.Errors[0] } else { 'see te script --validate' }
-                $s.Warnings += "does not compile in te ($($c.Errors.Count) error(s), first: $first)"
+                $s.Warnings += "does not compile in $Engine ($($c.Errors.Count) error(s), first: $first)"
             }
         }
 
@@ -189,6 +245,28 @@ foreach ($s in $skills) {
             '@{ ' + (($s.Inputs | Where-Object required | ForEach-Object { "$($_.name) = `"...`"" }) -join '; ') + ' }'
         } else { '@{}' }
         if ($envExample -eq '@{  }') { $envExample = '@{}' }
+
+        $macrosFileText = '%LOCALAPPDATA%\' + (Split-Path (Split-Path $editionFiles[$Edition]) -Leaf) + '\MacroActions.json'
+        if ($Engine -eq 'te') {
+            $engineText = "through the Tabular Editor CLI (``te``). The macro code is read from ``$macrosFileText`` on every run, so edits made in $Edition apply at once. In te the macro is compiled with ``TECLI`` defined, which makes it read the inputs above from environment variables instead of the selection or dialogs."
+            $inspectText = 'for example `te ls -m <path>`'
+            $dryRunText = 'Nothing is saved; te prints the diff of every object the macro would create or change:'
+            $saveText = 'Add `-Force` only if the user accepts saving with DAX validation errors.'
+            $engineGotchas = @(
+                '- Saving a PBIP folder with te can rewrite a few more lines than the macro changed (`compatibilityMode` in `database.tmdl`, blank lines, line endings). Review `git diff` afterwards.'
+            )
+        }
+        else {
+            $engineText = "through the Tabular Editor 2 command line (``TabularEditor.exe``). The macro code is read from ``$macrosFileText`` on every run, so edits made in $Edition apply at once. The macro detects the command line at runtime, which makes it read the inputs above from environment variables instead of the selection or dialogs."
+            $inspectText = 'for example by reading the model''s TMDL files or `model.bim`'
+            $dryRunText = 'Nothing is saved; the runner prints every object the macro would create (`+`), change (`~`) or delete (`-`):'
+            $saveText = 'TE2 doesn''t validate DAX, so after saving ask the user to check the new or changed objects in Power BI.'
+            $engineGotchas = @(
+                '- With `-Local` only one Power BI Desktop may be open; otherwise pass `-Server localhost:<port> -Database <name>`.'
+                '- Saving a PBIP folder with TE2 can rewrite more lines of the TMDL files than the macro changed. Review `git diff` afterwards.'
+                '- If the runner stops TabularEditor.exe after the timeout, the macro is waiting on a dialog: one of its inputs isn''t CLI-ready. Tell the user; don''t retry.'
+            )
+        }
 
         $skillMd = @"
 ---
@@ -202,7 +280,7 @@ $($s.Body)
 
 ## How to run
 
-This skill runs the Tabular Editor 3 macro **$($s.MacroName)** through the Tabular Editor CLI (``te``). The macro code is read from ``%LOCALAPPDATA%\TabularEditor3\MacroActions.json`` on every run, so edits made in TE3 apply at once. In te the macro is compiled with ``TECLI`` defined, which makes it read the inputs above from environment variables instead of the selection or dialogs.
+This skill runs the $editionName macro **$($s.MacroName)** $engineText
 
 1. **Pick the model.** Ask the user if the request doesn't make it clear.
 
@@ -212,23 +290,23 @@ This skill runs the Tabular Editor 3 macro **$($s.MacroName)** through the Tabul
    | ``-Local [-Database <name>]`` | Running Power BI Desktop / SSAS instance |
    | ``-Server <workspace or endpoint> -Database <name>`` | Fabric / Power BI workspace or XMLA endpoint |
 
-2. **Work out the inputs** listed above. Inspect the model when needed (for example ``te ls -m <path>``). Ask the user when a value is unclear instead of guessing.
+2. **Work out the inputs** listed above. Inspect the model when needed ($inspectText). Ask the user when a value is unclear instead of guessing.
 
-3. **Dry run.** Nothing is saved; te prints the diff of every object the macro would create or change:
+3. **Dry run.** $dryRunText
 
    ``````powershell
    & "$runnerPath" -Path "<model>" -MacrosFile "$(Get-DisplayPath ((Resolve-Path $MacrosFile).Path))" -Env $envExample
    ``````
 
-   A non-zero exit code means te or the macro reported an error (a missing or unresolved input, for example). Fix the inputs and retry, or tell the user.
+   A non-zero exit code means $(if ($Engine -eq 'te') { 'te' } else { 'TabularEditor.exe' }) or the macro reported an error (a missing or unresolved input, for example). Fix the inputs and retry, or tell the user.
 
-4. **Summarize the diff for the user and get confirmation**, then run the same command with ``-Save``. Add ``-Force`` only if the user accepts saving with DAX validation errors.
+4. **Summarize the diff for the user and get confirmation**, then run the same command with ``-Save``. $saveText
 
 ## Gotchas
 
 - Close Power BI Desktop before using ``-Path`` on a PBIP it has open, or use ``-Local`` instead.
-- Saving a PBIP folder with te can rewrite a few more lines than the macro changed (``compatibilityMode`` in ``database.tmdl``, blank lines, line endings). Review ``git diff`` afterwards.
-- If the runner says no macro carries this skill's name, the macro was removed or its ``// SKILL: name:`` changed in TE3: regenerate the skills with te-macro-skills.
+$($engineGotchas -join "`n")
+- If the runner says no macro carries this skill's name, the macro was removed or its ``// SKILL: name:`` changed in $($Edition): regenerate the skills with te-macro-skills.
 
 <!-- Generated by $generator from the "$($s.MacroName)" macro's // SKILL: header. Do not edit; change the macro and regenerate. -->
 "@
@@ -236,6 +314,8 @@ This skill runs the Tabular Editor 3 macro **$($s.MacroName)** through the Tabul
             generator     = $generator
             skillName     = $s.Name
             macroName     = $s.MacroName
+            edition       = $Edition
+            engine        = $Engine
             validContexts = $s.ValidContexts
             inputs        = @($s.Inputs)
         } | ConvertTo-Json -Depth 4

@@ -16,7 +16,7 @@ Column column = SelectColumn(table);
 
 string query = "EVALUATE DISTINCT(" + column.DaxObjectFullName + ")";
 
-using (var reader = Model.Database.ExecuteReader(query))
+using (var reader = ExecuteReader(query))
 {
     // Create a loop for every row in the resultset
     while (reader.Read())
