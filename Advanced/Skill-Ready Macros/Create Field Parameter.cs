@@ -232,8 +232,8 @@ if (maxPropertiesCount > 0)
     // Build DAX with additional property columns
     var daxRows = objects.Select((c, i) =>
     {
-        var baseValues = string.Format("\"{0}\", NAMEOF('{1}'[{0}]), {2}", c.Name, c.Table.Name, i);
-        var propertyValues = string.Join(", ", objectPropertiesLists[i].Select(p => string.Format("\"{0}\"", p)));
+        var baseValues = string.Format("\"{0}\", NAMEOF('{1}'[{2}]), {3}", c.Name.Replace("\"", "\"\""), c.Table.Name.Replace("'", "''"), c.Name.Replace("]", "]]"), i);
+        var propertyValues = string.Join(", ", objectPropertiesLists[i].Select(p => string.Format("\"{0}\"", p.Replace("\"", "\"\""))));
         return string.Format("({0}, {1})", baseValues, propertyValues);
     });
     dax = "{\n    " + string.Join(",\n    ", daxRows) + "\n}";
@@ -241,7 +241,7 @@ if (maxPropertiesCount > 0)
 else
 {
     // No properties found, use original format
-    dax = "{\n    " + string.Join(",\n    ", objects.Select((c, i) => string.Format("(\"{0}\", NAMEOF('{1}'[{0}]), {2})", c.Name, c.Table.Name, i))) + "\n}";
+    dax = "{\n    " + string.Join(",\n    ", objects.Select((c, i) => string.Format("(\"{0}\", NAMEOF('{1}'[{2}]), {3})", c.Name.Replace("\"", "\"\""), c.Table.Name.Replace("'", "''"), c.Name.Replace("]", "]]"), i))) + "\n}";
 }
 // Add the calculated table to the model:
 var table = Model.AddCalculatedTable(name, dax);
