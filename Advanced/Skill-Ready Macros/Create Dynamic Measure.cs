@@ -1,8 +1,25 @@
 #r "System.Drawing"
 #r "Microsoft.VisualBasic"
 using System.Windows.Forms;
-
 using Microsoft.VisualBasic;
+
+// MACRO: Name: Create Dynamic Measure
+// MACRO: ValidContexts: Measure
+// MACRO: Tooltip: Creates a dynamic measure and one disconnected selection table per property, based on the Properties annotations of the selected measures
+// SKILL: name: create-dynamic-measure
+// SKILL: description: Create a dynamic measure that switches between measures based on slicer selections, from measures carrying Properties annotations (e.g. created by Sum of Columns or Make Measures From Functions). Use when the user asks to create a dynamic measure, a measure switcher driven by slicers, let report users pick the aggregation / base column / time intelligence variant of a measure, or build disconnected selection tables from measure properties.
+// SKILL:
+// SKILL: Every measure must have a "Properties" annotation with pipe-separated values (e.g. "Sum|Sales Amount"), all with the same number of values and no two measures with the same Properties. For each property position the macro creates a disconnected calculated table "Selection <property name>" with the distinct values (label column, hidden-order "<name> Order" column and "<name> Key" column), plus one partially dynamic measure per value in that table (named after the value, or "<value> (dynamic)" if the name is taken). It then creates the dynamic measure in the table of the first measure: a SWITCH over the selected key of each table that returns the matching measure, with a dynamic format string that copies each measure's format.
+// SKILL:
+// SKILL: ## Inputs (environment variables)
+// SKILL: Set these variables before running the macro. Work out each value from the conversation and the model (inspect the model if needed); if a value is unclear, ask the user instead of guessing.
+// SKILL: - DM_MEASURES (required): measure refs ([Measure] or 'Table'[Measure]) separated by ';'. At least two measures with Properties annotations; they become the options of the dynamic measure.
+// SKILL: - DM_PROPERTY_NAMES (optional): names of the properties, separated by '|' (e.g. "Aggregation|Base Column"), one per Properties value. They name the selection tables ("Selection <name>") and their columns. By default the PropertyNames annotation of the measures is used (the first one if they differ), or Property1, Property2... when there is none; set it when the measures have no PropertyNames, carry different ones, or the user wants other names.
+// SKILL: - DM_NAME (optional, default "Dynamic Measure" followed by the property names separated by spaces, or just "Dynamic Measure" when there are none): name of the dynamic measure. Keep the default unless the user asked for a specific name or a measure with that name already exists.
+// SKILL:
+// SKILL: ## Notes
+// SKILL: Check the Properties annotations of the measures before running (same count, unique combinations); the macro stops with an error otherwise. The "Selection <name>" tables must not already exist, so running it twice over measures with the same property names fails. Tell the user to use the label column of each Selection table in a slicer and the dynamic measure in visuals once the model is saved and refreshed.
+// 2026-11-04 / B.Agullo / Skill-ready: in CLI mode (te or TE2 -S) the inputs come from the DM_* environment variables
 // 2026-05-30 / B.Agullo / FormatString values with embedded double-quotes are now escaped (doubled) when written into a DAX string literal
 // 2026-05-30 / B.Agullo / Fixed missing comma between SWITCH condition and its result value in all generated DAX expressions
 // 2026-05-30 / B.Agullo / PropertyNames with spaces are now sanitised (spaces removed) before use as DAX variable names; display names are unchanged
@@ -18,15 +35,32 @@ ScriptHelper.WaitFormVisible = false;
 #endif
 // Configuration: Prefix for disconnected tables (to group them together in Power BI Desktop)
 string tablePrefix = "Selection ";
+#if TECLI
+bool cliMode = true;
+#else
+bool cliMode = Fx.IsCliMode();
+#endif
+List<Measure> sourceMeasures = null;
+if (cliMode)
+{
+    sourceMeasures = Fx.GetMeasuresFromEnv(Model, "DM_MEASURES");
+    if (sourceMeasures == null) return;
+}
+#if !TECLI
+else
+{
+    sourceMeasures = Selected.Measures.ToList();
+}
+#endif
 // Validate selection
-if (Selected.Measures.Count() < 2)
+if (sourceMeasures.Count < 2)
 {
     Error("Select at least two measures with Properties annotations and try again.");
     return;
 }
 // Step 1: Extract and validate Properties annotations
 var measuresWithProperties = new List<(Measure measure, List<string> properties)>();
-foreach (var measure in Selected.Measures)
+foreach (var measure in sourceMeasures)
 {
     string propertiesAnnotation = measure.GetAnnotation("Properties");
     if (string.IsNullOrEmpty(propertiesAnnotation))
@@ -53,7 +87,7 @@ if (allPropertiesStrings.Count != allPropertiesStrings.Distinct().Count())
 }
 // Step 3.5: Retrieve PropertyNames annotations from selected measures
 var propertyNamesAnnotations = new List<string>();
-foreach (var measure in Selected.Measures)
+foreach (var measure in sourceMeasures)
 {
     string propertyNamesAnnotation = measure.GetAnnotation("PropertyNames") ?? "";
     if (!string.IsNullOrEmpty(propertyNamesAnnotation))
@@ -63,7 +97,30 @@ foreach (var measure in Selected.Measures)
 }
 // Determine property names for disconnected tables and variables
 List<string> propertyNames = new List<string>();
-if (propertyNamesAnnotations.Count > 0)
+if (cliMode)
+{
+    // Explicit names, else the first PropertyNames annotation, else Property1, Property2...
+    string cliPropertyNames = Fx.GetStringFromEnv("DM_PROPERTY_NAMES", defaultValue: "");
+    if (string.IsNullOrWhiteSpace(cliPropertyNames) && propertyNamesAnnotations.Count > 0)
+    {
+        cliPropertyNames = propertyNamesAnnotations[0];
+    }
+    if (string.IsNullOrWhiteSpace(cliPropertyNames))
+    {
+        for (int i = 0; i < propertyCount; i++) propertyNames.Add(String.Format("Property{0}", i + 1));
+    }
+    else
+    {
+        propertyNames = cliPropertyNames.Split('|').Select(p => p.Trim()).ToList();
+        if (propertyNames.Count != propertyCount)
+        {
+            Error(String.Format("Property names '{0}' have {1} values, but the Properties annotations have {2}. Set DM_PROPERTY_NAMES with {2} names separated by '|'.", cliPropertyNames, propertyNames.Count, propertyCount));
+            return;
+        }
+    }
+}
+#if !TECLI
+else if (propertyNamesAnnotations.Count > 0)
 {
     // Get distinct PropertyNames values
     var distinctPropertyNames = propertyNamesAnnotations.Distinct().ToList();
@@ -106,7 +163,7 @@ else
             .Distinct()
             .Take(3)
             .ToList();
-        string sampleText = sampleValues.Count > 0 
+        string sampleText = sampleValues.Count > 0
             ? String.Format(" (found values: '{0}')", string.Join("', '", sampleValues))
             : "";
         string propertyName = Fx.GetNameFromUser(
@@ -118,15 +175,26 @@ else
         propertyNames.Add(propertyName);
     }
 }
+#endif
 // Step 4: Ask user for dynamic measure name with smart default based on PropertyNames
 string defaultDynamicMeasureName = propertyNames.Count > 0
     ? "Dynamic Measure " + string.Join(" ", propertyNames)
     : "Dynamic Measure";
-string dynamicMeasureName = Fx.GetNameFromUser(
-    Prompt: "Enter the name for the dynamic measure:",
-    Title: "Dynamic Measure Name",
-    DefaultResponse: defaultDynamicMeasureName
-);
+string dynamicMeasureName = null;
+if (cliMode)
+{
+    dynamicMeasureName = Fx.GetStringFromEnv("DM_NAME", defaultValue: defaultDynamicMeasureName);
+}
+#if !TECLI
+else
+{
+    dynamicMeasureName = Fx.GetNameFromUser(
+        Prompt: "Enter the name for the dynamic measure:",
+        Title: "Dynamic Measure Name",
+        DefaultResponse: defaultDynamicMeasureName
+    );
+}
+#endif
 if (dynamicMeasureName == null) return;
 // DAX variable names cannot contain spaces – strip them from propertyNames
 List<string> daxSafePropertyNames = propertyNames.Select(p => p.Replace(" ", "")).ToList();
@@ -159,14 +227,14 @@ for (int i = 0; i < propertyCount; i++)
     var propTable = Model.AddCalculatedTable(tableName, tableDax);
     // Setup columns (handle both TE2 and TE3) - use columnBaseName without prefix
     var te2 = propTable.Columns.Count == 0;
-    var labelColumn = te2 
-        ? propTable.AddCalculatedTableColumn(columnBaseName, "[Value1]") 
+    var labelColumn = te2
+        ? propTable.AddCalculatedTableColumn(columnBaseName, "[Value1]")
         : propTable.Columns["Value1"] as CalculatedTableColumn;
-    var keyColumn = te2 
-        ? propTable.AddCalculatedTableColumn(columnBaseName + " Key", "[Value2]") 
+    var keyColumn = te2
+        ? propTable.AddCalculatedTableColumn(columnBaseName + " Key", "[Value2]")
         : propTable.Columns["Value2"] as CalculatedTableColumn;
-    var orderColumn = te2 
-        ? propTable.AddCalculatedTableColumn(columnBaseName + " Order", "[Value3]") 
+    var orderColumn = te2
+        ? propTable.AddCalculatedTableColumn(columnBaseName + " Order", "[Value3]")
         : propTable.Columns["Value3"] as CalculatedTableColumn;
     if (!te2)
     {
@@ -402,305 +470,25 @@ Output(String.Format(
 
 public static class Fx
 {
-    public static Measure GetSelectedMeasure(IEnumerable<Measure> measures, string label = "Select Measure")
+#if !TECLI
+    // In TE2 scripts run inside an "Hourglass" that sets Application.UseWaitCursor = true for the
+    // whole application, so dialog boxes show a busy cursor (TE3 solves this with WaitFormVisible).
+    // Turn the flag off and nudge Windows (WM_SETCURSOR) to refresh the cursor immediately,
+    // otherwise it only updates on the next mouse message. Call this before showing any dialog.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wp, IntPtr lp);
+    public static void ResetWaitCursor()
     {
-        Measure selectedMeasure = null;
-        if (measures.Count() == 1)
-        {
-            selectedMeasure = measures.First();
-        }
-        else
-        {
-            selectedMeasure = SelectMeasure(label: label);
-            if (selectedMeasure == null)
-            {
-                Info("No measure selected.");
-                return null;
-            }
-        }
-        return selectedMeasure;
-    }
-    public static Table GetSelectedTable(Model model, IEnumerable<Table> tables, string label = "Select Table", bool createMeasureTableIfNoneSelected = false, string createTableName = "ReferentialIntegrity" )
-    {
-        Table selectedTable = null;
-        if (tables.Count() == 1)
-        {
-            selectedTable = tables.First();
-        }
-        else if (tables.Count() > 1)
-        {
-            selectedTable = SelectTable(tables, preselect: tables.First(), label: label);
-            if (selectedTable == null)
-            {
-                Info("No table selected.");
-                return null;
-            }
-        } else             {
-            if (createMeasureTableIfNoneSelected)
-            {
-                selectedTable = model.AddCalculatedTable(createTableName, "FILTER({0},FALSE)");
-            } 
-            else
-            {
-                selectedTable = SelectTable(tables: tables, label: label);
-                if (selectedTable == null)
-                {
-                    Info("No table selected.");
-                    return null;
-                }
-            }
-        }
-        return selectedTable;
-    }
-    public static Dictionary<string, string> SelectCalculationItems(Model model, string label = "Select calculation items (max 1 per group)")
-    {
-        if (!model.Tables.OfType<CalculationGroupTable>().Any())
-        {
-            Info("No calculation groups found in the model.");
-            return null;
-        }
-        // Create a TreeView form
-        Form form = new Form
-        {
-            Text = label,
-            StartPosition = FormStartPosition.CenterScreen,
-            Width = 600,
-            Height = 500,
-            Padding = new Padding(10)
-        };
-        TreeView treeView = new TreeView
-        {
-            Dock = DockStyle.Fill,
-            CheckBoxes = true
-        };
-        // Track selections per calculation group
-        var selectionMap = new Dictionary<string, TreeNode>();
-        // Populate tree with calculation groups and items
-        foreach (var calcGroup in model.Tables.OfType<CalculationGroupTable>())
-        {
-            TreeNode groupNode = new TreeNode(calcGroup.Name)
-            {
-                Tag = calcGroup
-            };
-            foreach (var calcItem in calcGroup.CalculationItems)
-            {
-                TreeNode itemNode = new TreeNode(calcItem.Name)
-                {
-                    Tag = calcItem
-                };
-                groupNode.Nodes.Add(itemNode);
-            }
-            treeView.Nodes.Add(groupNode);
-            groupNode.Expand();
-        }
-        // Handle BeforeCheck to prevent checking group nodes
-        treeView.BeforeCheck += (sender, e) =>
-        {
-            // Prevent checking calculation group nodes (only allow calculation items)
-            if (e.Node.Tag is CalculationGroupTable)
-            {
-                e.Cancel = true;
-            }
-        };
-        // Handle node check events to enforce "one per group" rule
-        treeView.AfterCheck += (sender, e) =>
-        {
-            if (e.Node.Tag is CalculationItem)
-            {
-                var calcItem = (CalculationItem)e.Node.Tag;
-                string groupName = calcItem.CalculationGroupTable.Name;
-                if (e.Node.Checked)
-                {
-                    // Uncheck any previously selected item in this group
-                    if (selectionMap.ContainsKey(groupName))
-                    {
-                        selectionMap[groupName].Checked = false;
-                    }
-                    selectionMap[groupName] = e.Node;
-                }
-                else
-                {
-                    // Remove from selection if unchecked
-                    if (selectionMap.ContainsKey(groupName) && selectionMap[groupName] == e.Node)
-                    {
-                        selectionMap.Remove(groupName);
-                    }
-                }
-            }
-        };
-        // Button panel
-        FlowLayoutPanel buttonPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(5)
-        };
-        Button okButton = new Button
-        {
-            Text = "OK",
-            DialogResult = DialogResult.OK,
-            Width = 80,
-            Height = 30
-        };
-        Button cancelButton = new Button
-        {
-            Text = "Cancel",
-            DialogResult = DialogResult.Cancel,
-            Width = 80,
-            Height = 30
-        };
-        buttonPanel.Controls.Add(okButton);
-        buttonPanel.Controls.Add(cancelButton);
-        form.Controls.Add(treeView);
-        form.Controls.Add(buttonPanel);
-        // Show dialog
-        DialogResult result = form.ShowDialog();
-        if (result == DialogResult.Cancel)
-        {
-            Info("Selection cancelled.");
-            return null;
-        }
-        // Build result dictionary: CalculationGroupName -> CalculationItemName
-        var selectedItems = new Dictionary<string, string>();
-        foreach (var kvp in selectionMap)
-        {
-            if (kvp.Value.Checked)
-            {
-                selectedItems[kvp.Key] = kvp.Value.Text;
-            }
-        }
-        return selectedItems;
-    }
-    public static void CheckCompatibilityVersion(Model model, int requiredVersion, string customMessage = "Compatibility level must be raised to {0} to run this script. Do you want raise the compatibility level?")
-    {
-        if (model.Database.CompatibilityLevel < requiredVersion)
-        {
-            if (Fx.IsAnswerYes(String.Format("The model compatibility level is below {0}. " + customMessage, requiredVersion)))
-            {
-                model.Database.CompatibilityLevel = requiredVersion;
-            }
-            else
-            {
-                Info("Operation cancelled.");
-                return;
-            }
-        }
-    }
-    public static Function CreateFunction(
-        Model model,
-        string name,
-        string expression,
-        out bool functionCreated,
-        string description = null,
-        string annotationLabel = null,
-        string annotationValue = null,
-        string outputType = null,
-        string nameTemplate = null,
-        string formatString = null,
-        string displayFolder = null,
-        string outputDestination = null)
-    {
-        Function function = null as Function;
-        functionCreated = false;
-        var matchingFunctions = model.Functions.Where(f => f.GetAnnotation(annotationLabel) == annotationValue);
-        if (matchingFunctions.Count() == 1)
-        {
-            return matchingFunctions.First();
-        }
-        else if (matchingFunctions.Count() == 0)
-        {
-            function = model.AddFunction(name);
-            function.Expression = expression;
-            function.Description = description;
-            functionCreated = true;
-        }
-        else
-        {
-            Error("More than one function found with annoation " + annotationLabel + " value " + annotationValue);
-            return null as Function;
-        }
-        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-        {
-            function.SetAnnotation(annotationLabel, annotationValue);
-        }
-        if (!string.IsNullOrEmpty(outputType))
-        {
-            function.SetAnnotation("outputType", outputType);
-        }
-        if (!string.IsNullOrEmpty(nameTemplate))
-        {
-            function.SetAnnotation("nameTemplate", nameTemplate);
-        }
-        if (!string.IsNullOrEmpty(formatString))
-        {
-            function.SetAnnotation("formatString", formatString);
-        }
-        if (!string.IsNullOrEmpty(displayFolder))
-        {
-            function.SetAnnotation("displayFolder", displayFolder);
-        }
-        if (!string.IsNullOrEmpty(outputDestination))
-        {
-            function.SetAnnotation("outputDestination", outputDestination);
-        }
-        return function;
-    }
-    public static Table CreateCalcTable(Model model, string tableName, string tableExpression = "FILTER({0},FALSE)")
-    {
-        return model.Tables.FirstOrDefault(t =>
-                            string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase)) //case insensitive search
-                            ?? model.AddCalculatedTable(tableName, tableExpression);
-    }
-    public static Measure CreateMeasure(
-        Table table, 
-        string measureName, 
-        string measureExpression,
-        out bool measureCreated,
-        string formatString = null,
-        string displayFolder = null,
-        string description = null,
-        string annotationLabel = null, 
-        string annotationValue = null,
-        bool isHidden = false)
-    {
-        measureCreated = false;
-        IEnumerable<Measure> matchingMeasures = null as IEnumerable<Measure>;
-        if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-        {
-            matchingMeasures = table.Measures.Where(m => m.GetAnnotation(annotationLabel) == annotationValue);
-        }
-        else
-        {
-            matchingMeasures = table.Measures.Where(m => m.Name == measureName);
-        }
-        if (matchingMeasures.Count() == 1)
-        {
-            return matchingMeasures.First();
-        }
-        else if (matchingMeasures.Count() == 0)
-        {
-            Measure measure = table.AddMeasure(measureName, measureExpression);
-            measure.Description = description;
-            measure.DisplayFolder = displayFolder;
-            measure.FormatString = formatString;
-            measureCreated = true;
-            if (!string.IsNullOrEmpty(annotationLabel) && !string.IsNullOrEmpty(annotationValue))
-            {
-                measure.SetAnnotation(annotationLabel, annotationValue);
-            }
-            measure.IsHidden = isHidden;
-            return measure;
-        }
-        else
-        {
-            Error("More than one measure found with annoation " + annotationLabel + " value " + annotationValue);
-            Output(matchingMeasures);
-            return null as Measure;
-        }
+        if (!Application.UseWaitCursor) return;
+        Application.UseWaitCursor = false;
+        Cursor.Current = Cursors.Default;
+        Form f = Form.ActiveForm;
+        if (f != null && f.Handle != IntPtr.Zero)
+            SendMessage(f.Handle, 0x20, f.Handle, (IntPtr)1); // WM_SETCURSOR
     }
     public static string GetNameFromUser(string Prompt, string Title, string DefaultResponse)
     {
+        ResetWaitCursor();
         string response = Interaction.InputBox(Prompt, Title, DefaultResponse, 740, 400);
         if (response == null)
         {
@@ -709,57 +497,14 @@ public static class Fx
         };
         return response;
     }
-    public static bool IsAnswerYes(string question, string title = "Please confirm")
-    {
-        var result = MessageBox.Show(question, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        return result == DialogResult.Yes;
-    }
-    public static (IList<string> Values, string Type) SelectAnyObjects(Model model, string selectionType = null, string prompt1 = "select item type", string prompt2 = "select item(s)", string placeholderValue = "")
-    {
-        var returnEmpty = (Values: new List<string>(), Type: (string)null);
-        if (prompt1.Contains("{0}"))
-            prompt1 = string.Format(prompt1, placeholderValue ?? "");
-        if(prompt2.Contains("{0}"))
-            prompt2 = string.Format(prompt2, placeholderValue ?? "");
-        if (selectionType == null)
-        {
-            IList<string> selectionTypeOptions = new List<string> { "Table", "Column", "Measure", "Scalar" };
-            selectionType = ChooseString(selectionTypeOptions, label: prompt1, customWidth: 600);
-        }
-        if (selectionType == null) return returnEmpty;
-        IList<string> selectedValues = new List<string>();
-        switch (selectionType)
-        {
-            case "Table":
-                selectedValues = SelectTableMultiple(model, label: prompt2);
-                break;
-            case "Column":
-                selectedValues = SelectColumnMultiple(model, label: prompt2);
-                break;
-            case "Measure":
-                selectedValues = SelectMeasureMultiple(model: model, label: prompt2);
-                break;
-            case "Scalar":
-                IList<string> scalarList = new List<string>();
-                scalarList.Add(GetNameFromUser(prompt2, "Scalar value", "0"));
-                selectedValues = scalarList;
-                break;
-            default:
-                Error("Invalid selection type");
-                return returnEmpty;
-        }
-        if (selectedValues == null || selectedValues.Count == 0) return returnEmpty; 
-        return (Values:selectedValues, Type:selectionType);
-    }
+#endif
+    public const string DefaultSentinel = "<<USE_DEFAULT>>";
+#if !TECLI
     public static string ChooseString(IList<string> OptionList, string label = "Choose item", int customWidth = 400, int customHeight = 500)
     {
         return ChooseStringInternal(OptionList, MultiSelect: false, label: label, customWidth: customWidth, customHeight:customHeight) as string;
     }
-    public static List<string> ChooseStringMultiple(IList<string> OptionList, string label = "Choose item(s)", int customWidth = 650, int customHeight = 550)
-    {
-        return ChooseStringInternal(OptionList, MultiSelect:true, label:label, customWidth: customWidth, customHeight: customHeight) as List<string>;
-    }
-    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500)
+    private static object ChooseStringInternal(IList<string> OptionList, bool MultiSelect, string label = "Choose item(s)", int customWidth = 400, int customHeight = 500, string defaultValue = null, string description = null)
     {
         Form form = new Form
         {
@@ -792,11 +537,46 @@ public static class Fx
         };
         searchPanel.Controls.Add(searchLabel);
         searchPanel.Controls.Add(searchBox);
+        // Optional info panel: parameter description and "use default" checkbox
+        CheckBox useDefaultCheck = null;
+        Panel infoPanel = null;
+        int infoPanelHeight = 0;
+        if (!string.IsNullOrEmpty(description) || !string.IsNullOrEmpty(defaultValue))
+        {
+            infoPanel = new Panel { Dock = DockStyle.Top, Padding = new Padding(0, 0, 0, 5) };
+            int infoY = 0;
+            if (!string.IsNullOrEmpty(description))
+            {
+                Label descLabel = new System.Windows.Forms.Label
+                {
+                    Text = description,
+                    Location = new System.Drawing.Point(0, infoY),
+                    Width = customWidth - 60,
+                    Height = 36,
+                    Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+                };
+                infoPanel.Controls.Add(descLabel);
+                infoY += 40;
+                infoPanelHeight += 40;
+            }
+            if (!string.IsNullOrEmpty(defaultValue))
+            {
+                useDefaultCheck = new CheckBox
+                {
+                    Text = String.Format("Use default ({0})", defaultValue),
+                    Location = new System.Drawing.Point(0, infoY),
+                    AutoSize = true
+                };
+                infoPanel.Controls.Add(useDefaultCheck);
+                infoPanelHeight += 30;
+            }
+            infoPanel.Height = infoPanelHeight;
+        }
         // ListBox panel in the middle
         Panel listBoxPanel = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(0, 35, 0, 75)  // Top padding = searchPanel height, Bottom = buttonPanel height
+            Padding = new Padding(0, 35 + infoPanelHeight, 0, 75)  // Top padding = info + searchPanel height, Bottom = buttonPanel height
         };
         ListBox listbox = new ListBox
         {
@@ -895,14 +675,33 @@ public static class Fx
         // Add controls in proper order for Dock: Bottom first, Top second, Fill last
         form.Controls.Add(buttonPanel);    // Bottom - add first
         form.Controls.Add(searchPanel);    // Top - add second
+        if (infoPanel != null) form.Controls.Add(infoPanel);  // Top - sits above search panel
         form.Controls.Add(listBoxPanel);   // Fill - add last
+        // When "use default" is checked, disable the list/search to make clear the default will be used
+        if (useDefaultCheck != null)
+        {
+            useDefaultCheck.CheckedChanged += delegate
+            {
+                bool useDefault = useDefaultCheck.Checked;
+                listbox.Enabled = !useDefault;
+                searchBox.Enabled = !useDefault;
+                selectAllButton.Enabled = !useDefault;
+                selectNoneButton.Enabled = !useDefault;
+            };
+        }
         form.Width = customWidth;
-        form.Height = customHeight;
+        form.Height = customHeight + infoPanelHeight;
+        ResetWaitCursor();
         DialogResult result = form.ShowDialog();
         if (result == DialogResult.Cancel)
         {
             Info("You Cancelled!");
             return null;
+        }
+        // Default checkbox checked: signal default usage to the caller
+        if (useDefaultCheck != null && useDefaultCheck.Checked)
+        {
+            return MultiSelect ? (object)new List<string>() { DefaultSentinel } : (object)DefaultSentinel;
         }
         if (MultiSelect)
         {
@@ -916,187 +715,51 @@ public static class Fx
             return listbox.SelectedItem != null ? listbox.SelectedItem.ToString() : null;
         }
     }
-    public static IEnumerable<Table> GetDateTables(Model model)
+    // True when TE2 runs the script from the command line (-S / -SCRIPT). TE2 doesn't define TECLI and shows
+    // Select*/Choose* dialogs modally, which hangs an unattended run. Macros call it in the #else branch of #if TECLI
+    // (te is always CLI mode), so this method has no #if of its own.
+    public static bool IsCliMode()
     {
-        var dateTables = model.Tables
-            .Where(t => t.DataCategory == "Time" &&
-                   t.Columns.Any(c => c.IsKey && c.DataType == DataType.DateTime))
-            .ToList();
-        if (!dateTables.Any())
+        return Environment.GetCommandLineArgs().Any(a =>
+            a.Equals("-S", StringComparison.OrdinalIgnoreCase) || a.Equals("-SCRIPT", StringComparison.OrdinalIgnoreCase));
+    }
+#endif
+    // ENV helpers: used in the #if TECLI branch of macros so agents can pass inputs through environment variables.
+    // Lists are separated by ';'. All return null (after an Error) when the variable is missing or a value can't be resolved,
+    // except when a defaultValue is given, which is used if the variable is missing or empty.
+    // Raw string value, e.g. a name for a new measure or table
+    public static string GetStringFromEnv(string envVar, string defaultValue = null)
+    {
+        string value = Environment.GetEnvironmentVariable(envVar);
+        if (!String.IsNullOrWhiteSpace(value)) return value;
+        if (defaultValue != null) return defaultValue;
+        Error("Environment variable " + envVar + " is not set.");
+        return null;
+    }
+    // Several string values separated by ';'
+    public static List<string> GetStringsFromEnv(string envVar)
+    {
+        string value = GetStringFromEnv(envVar);
+        if (value == null) return null;
+        return value.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToList();
+    }
+    // Resolves each ';'-separated reference against the candidates using the given name forms
+    private static List<T> GetObjectsFromEnv<T>(string envVar, IEnumerable<T> candidates, Func<T, string[]> names, string kind)
+    {
+        List<string> references = GetStringsFromEnv(envVar);
+        if (references == null) return null;
+        var result = new List<T>();
+        foreach (string reference in references)
         {
-            Error("No date table detected in the model. Please mark your date table(s) as date table");
-            return null;
+            T obj = candidates.FirstOrDefault(c => names(c).Contains(reference));
+            if (obj == null) { Error(kind + " " + reference + " (from " + envVar + ") not found."); return null; }
+            result.Add(obj);
         }
-        return dateTables;
+        return result;
     }
-    public static Table GetDateTable(Model model, string prompt = "Select Date Table")
+    // [Sales Amount], Sales Amount or 'Sales'[Sales Amount]
+    public static List<Measure> GetMeasuresFromEnv(Model model, string envVar)
     {
-        var dateTables = GetDateTables(model);
-        if (dateTables == null) {
-            Table t = SelectTable(model.Tables, label: prompt);
-            if(t == null)
-            {
-                Error("No table selected");
-                return null;
-            }
-            if (IsAnswerYes(String.Format("Mark {0} as date table?",t.DaxObjectFullName)))
-            {
-                t.DataCategory = "Time";
-                var dateColumns = t.Columns
-                    .Where(c => c.DataType == DataType.DateTime)
-                    .ToList();
-                if(dateColumns.Count == 0)
-                {
-                    Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column",t.Name));
-                    return null;
-                }
-                var keyColumn = SelectColumn(dateColumns, preselect:dateColumns.First(), label: "Select Date Column to be used as key column");
-                if(keyColumn == null)
-                {
-                    Error("No key column selected");
-                    return null;
-                }
-                keyColumn.IsKey = true;
-            }
-            return t;
-        };
-        if (dateTables.Count() == 1)
-            return dateTables.First();
-        Table dateTable = SelectTable(dateTables, label: prompt);
-        if(dateTable == null)
-        {
-            Error("No table selected");
-            return null;
-        }
-        return dateTable;
-    }
-    public static Column GetDateColumn(Table dateTable, string prompt = "Select Date Column")
-    {
-        var dateColumns = dateTable.Columns
-            .Where(c => c.DataType == DataType.DateTime)
-            .ToList();
-        if(dateColumns.Count == 0)
-        {
-            Error(String.Format(@"No date column detected in the table {0}. Please check that the table contains a date column", dateTable.Name));
-            return null;
-        }
-        if(dateColumns.Any(c => c.IsKey))
-        {
-            return dateColumns.First(c => c.IsKey);
-        }
-        Column dateColumn = null;
-        if (dateColumns.Count() == 1)
-        {
-            dateColumn = dateColumns.First();
-        }
-        else
-        {
-            dateColumn = SelectColumn(dateColumns, label: prompt);
-            if (dateColumn == null)
-            {
-                Error("No column selected");
-                return null;
-            }
-        }
-        return dateColumn;
-    }
-    public static IEnumerable<Table> GetFactTables(Model model)
-    {
-        IEnumerable<Table> factTables = model.Tables.Where(
-            x => model.Relationships.Where(r => r.ToTable == x)
-                    .All(r => r.ToCardinality == RelationshipEndCardinality.Many)
-                && model.Relationships.Where(r => r.FromTable == x)
-                    .All(r => r.FromCardinality == RelationshipEndCardinality.Many)
-                && model.Relationships.Where(r => r.ToTable == x || r.FromTable == x).Any()); // at least one relationship
-        if (!factTables.Any())
-        {
-            Error("No fact table detected in the model. Please check that the model contains relationships");
-            return null;
-        }
-        return factTables;
-    }
-    public static Table GetFactTable(Model model, string prompt = "Select Fact Table")
-    {
-        Table factTable = null;
-        var factTables = GetFactTables(model);
-        if (factTables == null)
-        {
-           factTable = SelectTable(model.Tables, label: "This does not look like a star schema. Choose your fact table manually");
-            if (factTable == null)
-            {
-                Error("No table selected");
-                return null;
-            }
-            return factTable;
-        };
-        if (factTables.Count() == 1)
-            return factTables.First();
-        factTable = SelectTable(factTables, label: prompt);
-        if (factTable == null)
-        {
-            Error("No table selected");
-            return null;
-        }
-        return factTable;
-    }
-    public static Table GetTablesWithAnnotation(IEnumerable<Table> tables, string annotationLabel, string annotationValue)
-    {
-        Func<Table, bool> lambda = t => t.GetAnnotation(annotationLabel) == annotationValue;
-        IEnumerable<Table> matchTables = GetFilteredTables(tables, lambda);
-        return GetFilteredTables(tables, lambda).FirstOrDefault();
-    }
-    public static IEnumerable<Table> GetFilteredTables(IEnumerable<Table> tables, Func<Table, bool> lambda)
-    {
-        var filteredTables = tables.Where(t => lambda(t));
-        return filteredTables.Any() ? filteredTables : null;
-    }
-    public static IEnumerable<Column> GetFilteredColumns(IEnumerable<Column> columns, Func<Column, bool> lambda, bool returnAllIfNoneFound = true)
-    {
-        var filteredColumns = columns.Where(c => lambda(c));
-        return filteredColumns.Any() || returnAllIfNoneFound ? filteredColumns : null;
-    }
-    public static IList<string> SelectMeasureMultiple(Model model, IEnumerable<Measure> measures = null, string label = "Select Measure(s)")
-    {
-        measures ??= model.AllMeasures;
-        // Create display strings with format: TableName\DisplayFolder\[MeasureName]
-        var measureDisplayMap = new Dictionary<string, string>();
-        var displayList = new List<string>();
-        foreach (var measure in measures.OrderBy(m => m.Table.Name).ThenBy(m => m.DisplayFolder).ThenBy(m => m.Name))
-        {
-            string displayString;
-            if (string.IsNullOrEmpty(measure.DisplayFolder))
-            {
-                displayString = String.Format("{0}\\[{1}]", measure.Table.Name, measure.Name);
-            }
-            else
-            {
-                displayString = String.Format("{0}\\{1}\\[{2}]", measure.Table.Name, measure.DisplayFolder, measure.Name);
-            }
-            measureDisplayMap[displayString] = measure.DaxObjectFullName;
-            displayList.Add(displayString);
-        }
-        // Show the display list to user
-        var selectedDisplayStrings = ChooseStringMultiple(displayList, label: label);
-        if (selectedDisplayStrings == null || selectedDisplayStrings.Count == 0)
-            return new List<string>();
-        // Map back to DaxObjectFullName
-        var selectedMeasureNames = selectedDisplayStrings
-            .Select(display => measureDisplayMap[display])
-            .ToList();
-        return selectedMeasureNames;
-    }
-    public static IList<string> SelectColumnMultiple(Model model, IEnumerable<Column> columns = null, string label = "Select Columns(s)")
-    {
-        columns ??= model.AllColumns;
-        IList<string> columnNames = columns.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedColumnNames = ChooseStringMultiple(columnNames, label: label);
-        return selectedColumnNames;
-    }
-    public static IList<string> SelectTableMultiple(Model model, IEnumerable<Table> Tables = null, string label = "Select Tables(s)", int customWidth = 400)
-    {
-        Tables ??= model.Tables;
-        IList<string> TableNames = Tables.Select(m => m.DaxObjectFullName).ToList();
-        IList<string> selectedTableNames = ChooseStringMultiple(TableNames, label: label, customWidth: customWidth);
-        return selectedTableNames;
+        return GetObjectsFromEnv(envVar, model.AllMeasures, m => new[] { m.DaxObjectFullName, m.Name, m.Table.DaxObjectFullName + m.DaxObjectFullName }, "Measure");
     }
 }

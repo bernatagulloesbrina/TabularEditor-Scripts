@@ -14,6 +14,8 @@ The macros in `Advanced/Skill-Ready Macros` work both as Tabular Editor 3 macros
 /plugin install te-macros@tabular-editor-scripts
 ```
 
+To prepare a new machine (Tabular Editor, the te CLI and, for authoring macros, the TE-Scripting-in-Visual-Studio solution), ask Claude to "set up my Tabular Editor environment", or follow [SETUP.md](SETUP.md).
+
 Then ask Claude to "import the skill-ready macros and generate their skills". It adds the macros to Tabular Editor 3 (close it first) and generates one skill per macro in a local `macro-skills` plugin. Enable or disable those skills together with `/plugin`.
 
 ## How to contribute
