@@ -7,7 +7,7 @@
 
   Consumption environment (run skill-ready macros as Claude skills, from TabularEditor-Scripts):
     script execution policy, admin rights, winget, whether Tabular Editor is open, Claude Code CLI, Tabular Editor 3
-    and/or 2, the te CLI, MacroActions.json, the te-macros and macro-skills plugins, git.
+    and/or 2, the te CLI, MacroActions.json, TE2's C# compiler (Roslyn), the te-macros and macro-skills plugins, git.
   Authoring environment (-Authoring; write macros in Visual Studio with TE-Scripting-in-Visual-Studio):
     the .NET SDK, Tabular Editor 2 (referenced by the projects), the authoring and publication repo clones,
     TE_PUBLISH_REPO, the CopyMacro macro in Tabular Editor and, with -Build, a build of the solution.
@@ -120,6 +120,30 @@ foreach ($e in @(@{ Name = 'TE3'; Folder = "$env:LOCALAPPDATA\TabularEditor3"; E
     catch { Add-Result $area "$($e.Name) macros" 'warning' "MacroActions.json can't be read: $($_.Exception.Message)" 'restore the latest MacroActions.json.*.bak next to it' 'claude' }
 }
 
+# TE2's C# compiler. Out of the box it's the .NET Framework one (C# 5), and TE2 compiles all the macros together: one
+# macro with modern C# ($"...", tuples, ??=) makes every macro fail to load, and those macros can't run through TE2's
+# command line. A Roslyn csc.exe (Visual Studio, or the .NET SDK) fixes it. A folder without csc.exe (e.g. an
+# uninstalled SDK version) silently falls back to C# 5.
+$te2Prefs = "$env:LOCALAPPDATA\TabularEditor\Preferences.json"
+if ($te2Exe -and (Test-Path $te2Prefs)) {
+    $setCompiler = "with the user's OK, TE2 closed: & `"$PSScriptRoot\Set-Te2Compiler.ps1`""
+    $hasDotnetSdk = [bool](Get-Command dotnet -ErrorAction SilentlyContinue) -and [bool](@(& dotnet --list-sdks 2>$null) | Where-Object { $_ -match '^\d+\.' })
+    $vsRoslyn = $false
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) { $vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath 2>$null | Select-Object -First 1; $vsRoslyn = $vsPath -and (Test-Path "$vsPath\MSBuild\Current\Bin\Roslyn\csc.exe") }
+    $fix = if ($vsRoslyn -or $hasDotnetSdk) { $setCompiler } else { "$(Get-InstallFix 'Microsoft.DotNet.SDK.8' 'https://dotnet.microsoft.com/download'), then $setCompiler" }
+    try {
+        $p = Get-Content $te2Prefs -Raw -Encoding UTF8 | ConvertFrom-Json
+        $compilerDir = [string]$p.ScriptCompilerDirectoryPath
+        $compilerOptions = [string]$p.ScriptCompilerOptions
+        if (-not $compilerDir) { Add-Result $area 'TE2 C# compiler' 'missing' 'built-in C# 5 compiler: macros using modern C# (e.g. Make Measures From Functions) fail to compile, and in TE2 one failing macro stops all of them from loading' $fix 'claude' }
+        elseif (-not (Test-Path (Join-Path $compilerDir 'csc.exe'))) { Add-Result $area 'TE2 C# compiler' 'missing' "no csc.exe in $compilerDir (e.g. that .NET SDK version was uninstalled): TE2 silently falls back to C# 5" $fix 'claude' }
+        elseif ($compilerDir -match '\\bincore\\?$' -and $compilerOptions -notmatch '-r:mscorlib') { Add-Result $area 'TE2 C# compiler' 'missing' "$compilerDir is the .NET SDK compiler but the options lack -lib/-r:mscorlib.dll, so nothing compiles" $fix 'claude' }
+        else { Add-Result $area 'TE2 C# compiler' 'ok' "$compilerDir$(if ($compilerOptions) { " ($compilerOptions)" })" }
+    }
+    catch { Add-Result $area 'TE2 C# compiler' 'warning' "Preferences.json can't be read: $($_.Exception.Message)" '' '' }
+}
+
 $pluginsDir = "$env:USERPROFILE\.claude\plugins"
 $installed = @()
 if (Test-Path "$pluginsDir\installed_plugins.json") {
@@ -141,10 +165,12 @@ else { Add-Result $area 'macro-skills plugin' 'info' 'no macro skills generated 
 
 # ready to import and generate: an edition with a settings folder, an engine, and claude for -Register
 $ready = (Test-Path "$env:LOCALAPPDATA\TabularEditor3") -or (Test-Path "$env:LOCALAPPDATA\TabularEditor")
+$compilerRow = $results | Where-Object { $_.Check -eq 'TE2 C# compiler' -and $_.Status -eq 'missing' }
 $engine = $teCli -or $te2Exe
-if ($ready -and $engine -and $claude) { Add-Result $area 'Ready to import macros' 'ok' 'Tabular Editor settings folder, engine (te / TE2) and claude found' }
+if ($ready -and $engine -and $claude -and -not $compilerRow) { Add-Result $area 'Ready to import macros' 'ok' 'Tabular Editor settings folder, engine (te / TE2) and claude found' }
 else {
     $why = @()
+    if ($compilerRow) { $why += 'set up the TE2 C# compiler (or the imported macros break TE2)' }
     if (-not $ready) { $why += 'start Tabular Editor once' }
     if (-not $engine) { $why += 'install te or Tabular Editor 2' }
     if (-not $claude) { $why += 'install Claude Code CLI' }
