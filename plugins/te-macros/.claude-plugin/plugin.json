@@ -1,6 +1,6 @@
 {
   "name": "te-macros",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Set up the Tabular Editor macro environments, import skill-ready Tabular Editor macros from GitHub and turn them into Claude skills that run through the Tabular Editor CLI.",
   "author": {
     "name": "Bernat Agulló Roselló"

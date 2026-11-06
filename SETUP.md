@@ -6,11 +6,11 @@ There are two environments. You need the first to use the macros, and both to wr
 |---|---|---|
 | **For** | Running the skill-ready macros, in Tabular Editor or by asking Claude | Writing and publishing macros |
 | **Repos** | none (installs from this repo on GitHub) | [TE-Scripting-in-Visual-Studio](https://github.com/bernatagulloesbrina/TE-Scripting-in-Visual-Studio) + this repo, cloned side by side |
-| **Software** | Tabular Editor 2, Claude Code (Tabular Editor 3 and the `te` CLI are used too if you have them) | everything on the left, plus git, the .NET SDK, Tabular Editor 2 and optionally Visual Studio |
+| **Software** | Tabular Editor 2, Claude Code, git (Claude Code uses it to install the plugin). Tabular Editor 3 and the `te` CLI are used too if you have them | everything on the left, plus the .NET SDK and optionally Visual Studio |
 
 ## The quick way: let Claude do it
 
-1. Install [Claude Code](https://claude.com/claude-code) (`winget install --id Anthropic.ClaudeCode -e`) and start it with `claude`.
+1. Install git (`winget install --id Git.Git -e`) and [Claude Code](https://claude.com/claude-code) (`winget install --id Anthropic.ClaudeCode -e`). Open a new terminal so it picks up the new PATH, then start Claude Code with `claude`.
 2. Add the plugin:
 
    ```
@@ -20,13 +20,26 @@ There are two environments. You need the first to use the macros, and both to wr
 
 3. Say **"set up my Tabular Editor environment"** (or "...including the authoring environment").
 
-The `te-setup` skill checks the machine, installs what it can (after asking you) and sets the environment variables. For authoring it also clones and builds the solution and installs CopyMacro. It gives you a checklist for what only you can do: start Tabular Editor once and approve UAC prompts. Ask "check my setup" at any time to re-run the check.
+The `te-setup` skill checks the machine first. It asks you only what it can't find out itself, such as where to clone the repos or whether you work from a fork. Before anything Windows protects by default, it asks for your OK: installing software (you approve each UAC prompt on screen), changing environment variables or the PowerShell script policy, and writing Tabular Editor's macros. For authoring it also clones and builds the solution and installs CopyMacro. It gives you a checklist for what only you can do, such as starting Tabular Editor once. Ask "check my setup" at any time to re-run the check.
 
 Setup doesn't import any macros. When it's done, close Tabular Editor and ask **"import the skill-ready macros and generate their skills"**, then run `/reload-plugins`.
 
 ## The manual way (or with another AI agent)
 
-These steps work as instructions for any coding agent too: give it the link to this page. Optionally, once you have a clone of this repo (authoring step 4), you can see what's already in place and what's missing by running the read-only check in PowerShell from the clone's folder:
+These steps work as instructions for any coding agent too: give it the link to this page. *Agents: ask the user before you install software, change the execution policy or environment variables, or write to Tabular Editor's macros. Ask the user to close Tabular Editor; never stop it yourself. Never work around a group policy.*
+
+### Before you start
+
+- **Allow PowerShell scripts.** New Windows machines block `.ps1` files ("running scripts is disabled on this system"), and the steps below run some. Allow local scripts for your account only:
+
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+  ```
+
+  If it says the setting is overridden by a policy, your IT department controls it. Ask them, or use the quick way: Claude Code isn't affected.
+- **Admin rights.** winget installs show a UAC prompt you have to approve. Without admin rights, ask IT to install the software. Alternatively, extract the [portable Tabular Editor 2 zip](https://github.com/TabularEditor/TabularEditor/releases) anywhere and set `TabularEditor2Dir` (see Environment variables).
+
+Optionally, once you have a clone of this repo (authoring step 4), you can see what's already in place and what's missing by running the read-only check in PowerShell from the clone's folder:
 
 ```powershell
 & ".\plugins\te-macros\skills\te-setup\scripts\Test-TeEnvironment.ps1" -Authoring -Build   # drop -Authoring -Build to check consumption only
@@ -48,13 +61,14 @@ These steps work as instructions for any coding agent too: give it the link to t
 4. **Clone both repos into the same folder.** If you can't push to this repo, fork it and clone your fork:
 
    ```powershell
-   cd $env:USERPROFILE\source\repos
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\source\repos" | Out-Null
+   cd "$env:USERPROFILE\source\repos"
    git clone https://github.com/bernatagulloesbrina/TE-Scripting-in-Visual-Studio
    git clone https://github.com/bernatagulloesbrina/TabularEditor-Scripts
    ```
 
-5. **Build**: `dotnet build "TE-Scripting-in-Visual-Studio\TE Scripts\TE Scripts.csproj"`.
-6. **Install CopyMacro** in Tabular Editor (close it first). This macro copies any macro from `TE Scripts.cs` to the clipboard, ready to paste and save as a macro:
+5. **Build** (from the same folder as step 4): `dotnet build "TE-Scripting-in-Visual-Studio\TE Scripts\TE Scripts.csproj"`.
+6. **Install CopyMacro** in Tabular Editor (save your work and close it first). This macro copies any macro from `TE Scripts.cs` to the clipboard, ready to paste and save as a macro. If you already have a macro called "Get Macro", it is replaced. Add `-WhatIf` to see what would change first:
 
    ```powershell
    & "TE-Scripting-in-Visual-Studio\.claude\skills\publish-macro\scripts\Install-CopyMacro.ps1"
@@ -75,6 +89,10 @@ You only need these when the defaults don't fit. Set them as **user** variables,
 | `GITHUB_TOKEN` | importing from a private repo, or many files at once (anonymous GitHub limit: 60 requests/hour) | a GitHub token; `gh auth login` works instead | the macro importer |
 
 ## Troubleshooting
+
+- **"running scripts is disabled on this system"**: see [Before you start](#before-you-start).
+- **winget waits and nothing happens**: a UAC prompt is waiting for you, possibly behind other windows. Approve it.
+- **`/plugin marketplace add` fails**: git isn't installed, or this terminal was opened before git was installed. Install git, open a new terminal and start `claude` again.
 
 - **Build: "Tabular Editor 2 not found in ..."**: install TE2 or set `TabularEditor2Dir`.
 - **Build: references to `..\..\..\..\..\..\Program Files (x86)\...`**: your clone is older than `TE.References.props`. Pull the latest version.

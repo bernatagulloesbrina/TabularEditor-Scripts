@@ -6,9 +6,10 @@
   Read-only: nothing is installed or changed (except the -Build check, which builds the authoring solution).
 
   Consumption environment (run skill-ready macros as Claude skills, from TabularEditor-Scripts):
-    Claude Code CLI, Tabular Editor 3 and/or 2, the te CLI, MacroActions.json, the te-macros and macro-skills plugins.
+    script execution policy, admin rights, winget, whether Tabular Editor is open, Claude Code CLI, Tabular Editor 3
+    and/or 2, the te CLI, MacroActions.json, the te-macros and macro-skills plugins, git.
   Authoring environment (-Authoring; write macros in Visual Studio with TE-Scripting-in-Visual-Studio):
-    git, the .NET SDK, Tabular Editor 2 (referenced by the projects), the authoring and publication repo clones,
+    the .NET SDK, Tabular Editor 2 (referenced by the projects), the authoring and publication repo clones,
     TE_PUBLISH_REPO, the CopyMacro macro in Tabular Editor and, with -Build, a build of the solution.
 
   One row per check: Area, Check, Status (ok / missing / warning / info), Detail, Fix and Who (claude: the agent can do
@@ -46,6 +47,32 @@ function Get-InstallFix([string] $id, [string] $url) {
 # ---------------------------------------------------------------- Consumption -------------------------------------
 $area = 'consumption'
 Add-Result $area 'PowerShell' 'ok' ("{0} {1}" -f $PSVersionTable.PSEdition, $PSVersionTable.PSVersion)
+
+# Script execution policy as the user's own PowerShell sees it. Claude Code runs PowerShell with Process=Bypass, so
+# that scope is ignored: a new Windows client defaults to Restricted, which blocks the manual steps of SETUP.md.
+$policies = @{}
+Get-ExecutionPolicy -List | ForEach-Object { $policies[[string]$_.Scope] = [string]$_.ExecutionPolicy }
+$gpScope = @('MachinePolicy', 'UserPolicy') | Where-Object { $policies[$_] -and $policies[$_] -ne 'Undefined' } | Select-Object -First 1
+$policy = if ($gpScope) { $policies[$gpScope] }
+          elseif ($policies['CurrentUser'] -ne 'Undefined') { $policies['CurrentUser'] }
+          elseif ($policies['LocalMachine'] -ne 'Undefined') { $policies['LocalMachine'] }
+          else { 'Restricted' }
+if ($policy -notin @('Restricted', 'AllSigned')) { Add-Result $area 'Script execution policy' 'ok' $policy }
+elseif ($gpScope) { Add-Result $area 'Script execution policy' 'warning' "$policy, set by group policy ($gpScope): the user can't run .ps1 files in their own PowerShell. Claude Code and the macros still work" 'only IT can change it; never try to bypass it' 'user' }
+else { Add-Result $area 'Script execution policy' 'warning' "$policy (Windows default): the user can't run .ps1 files in their own PowerShell, e.g. the manual steps of SETUP.md. Claude Code and the macros still work" 'with the user''s OK: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force' 'claude' }
+
+# Admin rights: winget installs to Program Files (TE2, git, .NET SDK) show a UAC prompt. A standard user can't approve it.
+# The Administrators SID is in the token even when UAC filters it ("deny only"), so this detects admin accounts.
+$isAdminAccount = [bool]((whoami /groups) -match 'S-1-5-32-544')
+if ($isAdminAccount) { Add-Result $area 'Admin rights' 'info' 'administrator account: installs show a UAC prompt the user must approve on screen' }
+else { Add-Result $area 'Admin rights' 'warning' 'standard user: installs to Program Files need an administrator (IT) to enter credentials' 'ask the user whether IT installs the software, or use the portable Tabular Editor 2 zip plus TabularEditor2Dir' 'user' }
+
+# winget is how everything is installed. Without it every install is a manual download.
+if (-not $hasWinget) { Add-Result $area 'winget' 'warning' 'not available (missing or blocked by policy): every install is a manual download' 'the user installs "App Installer" from the Microsoft Store, or downloads each tool' 'user' }
+
+# Tabular Editor must be closed while MacroActions.json is written (import, CopyMacro), or it overwrites the file on exit
+$teOpen = @(Get-Process -Name 'TabularEditor', 'TabularEditor3' -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName } | Select-Object -Unique)
+if ($teOpen) { Add-Result $area 'Tabular Editor open' 'warning' "$($teOpen -join ', ') running: close it before importing macros or installing CopyMacro" 'the user saves their work and closes it (never stop the process)' 'user' }
 
 $claude = Find-Exe 'claude' @()
 if ($claude) { Add-Result $area 'Claude Code CLI' 'ok' $claude }
@@ -101,6 +128,11 @@ if (Test-Path "$pluginsDir\installed_plugins.json") {
 if ($installed -match '^te-macros@') { Add-Result $area 'te-macros plugin' 'ok' (($installed -match '^te-macros@') -join ', ') }
 else { Add-Result $area 'te-macros plugin' 'missing' 'not installed in Claude Code' 'claude plugin marketplace add bernatagulloesbrina/TabularEditor-Scripts; claude plugin install te-macros@tabular-editor-scripts --scope user' 'claude' }
 
+# Claude Code clones GitHub plugin marketplaces with git (adding and updating te-macros); authoring clones the repos
+$git = Find-Exe 'git' @("$env:ProgramFiles\Git\cmd\git.exe")
+if ($git) { Add-Result $area 'git' 'ok' $git }
+else { Add-Result $area 'git' $(if ($Authoring -or -not ($installed -match '^te-macros@')) { 'missing' } else { 'warning' }) 'needed to add and update the te-macros plugin marketplace (and to clone the repos for authoring)' (Get-InstallFix 'Git.Git' 'https://git-scm.com/download/win') 'claude' }
+
 $macroSkillsDir = "$env:USERPROFILE\.claude\macro-skills\plugins\macro-skills\skills"
 $generated = @(Get-ChildItem $macroSkillsDir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'macro.json') }).Count
 if ($installed -contains 'macro-skills@local-macro-skills') { Add-Result $area 'macro-skills plugin' 'ok' "registered, $generated generated skills" }
@@ -126,9 +158,6 @@ Add-Result $area 'GitHub token' $(if ($token) { 'ok' } else { 'info' }) $(if ($t
 # ---------------------------------------------------------------- Authoring ---------------------------------------
 if ($Authoring) {
     $area = 'authoring'
-
-    $git = Find-Exe 'git' @("$env:ProgramFiles\Git\cmd\git.exe")
-    if ($git) { Add-Result $area 'git' 'ok' $git } else { Add-Result $area 'git' 'missing' 'needed to clone the repos' (Get-InstallFix 'Git.Git' 'https://git-scm.com/download/win') 'claude' }
 
     $dotnet = Find-Exe 'dotnet' @("$env:ProgramFiles\dotnet\dotnet.exe")
     $sdks = if ($dotnet) { @(& $dotnet --list-sdks 2>$null) } else { @() }
